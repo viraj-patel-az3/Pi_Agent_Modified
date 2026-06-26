@@ -256,7 +256,14 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	// Viraj's Code start
+	startupHelpMode?: StartupHelpMode;
+	// Viraj's Code end
 }
+
+// Viraj's Code start
+import { DEFAULT_STARTUP_HELP_MODE, type StartupHelpMode } from "../../cli/args.ts";
+// Viraj's Code end
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
@@ -366,6 +373,9 @@ export class InteractiveMode {
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
 
 	private options: InteractiveModeOptions;
+	// Viraj's Code start
+	private startupHelpMode: StartupHelpMode;
+	// Viraj's Code end
 
 	// Convenience accessors
 	private get session(): AgentSession {
@@ -384,6 +394,11 @@ export class InteractiveMode {
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		this.options = options;
+		// Viraj's Code start
+		const startupHelpMode = options.startupHelpMode ?? DEFAULT_STARTUP_HELP_MODE;
+		this.startupHelpMode = startupHelpMode;
+		this.toolOutputExpanded = startupHelpMode === "verbose";
+		// Viraj's Code end
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
@@ -476,6 +491,22 @@ export class InteractiveMode {
 			name: command.name,
 			description: command.description,
 		}));
+
+		// Viraj's Code start
+		const startupHelpCommand = slashCommands.find((command) => command.name === "startup-help");
+		if (startupHelpCommand) {
+			startupHelpCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const modes = ["status", "compact", "verbose", "off"];
+				const filtered = modes.filter((m) => m.startsWith(prefix.toLowerCase()));
+				if (filtered.length === 0) return null;
+				return filtered.map((m) => ({
+					value: m,
+					label: m,
+					description: m === "status" ? "Show current startup help mode" : `Set startup help mode to ${m}`,
+				}));
+			};
+		}
+		// Viraj's Code end
 
 		const modelCommand = slashCommands.find((command) => command.name === "model");
 		if (modelCommand) {
@@ -623,7 +654,46 @@ export class InteractiveMode {
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
+			// Viraj's Code
+			const getLogoSplash = () => {
+				const coloredLogoLines = [
+					`${chalk.hex("#f97316")("███")}    ${chalk.hex("#ef4444")("█████")}  `,
+					`${chalk.hex("#f97316")("██ ██")}      ${chalk.hex("#ef4444")("██")} `,
+					`${chalk.hex("#a855f7")("█████")}     ${chalk.hex("#a855f7")("██")}  `,
+					`${chalk.hex("#22c55e")("██ ██")}    ${chalk.hex("#3b82f6")("██")}   `,
+					`${chalk.hex("#22c55e")("██ ██")}   ${chalk.hex("#3b82f6")("█████")} `,
+				];
+
+				const modelObj = this.session.model;
+				const modelName = modelObj ? modelObj.name || modelObj.id : "No model";
+				const thinkingStr =
+					modelObj?.reasoning && this.session.thinkingLevel && this.session.thinkingLevel !== "off"
+						? ` (${this.session.thinkingLevel.charAt(0).toUpperCase() + this.session.thinkingLevel.slice(1)})`
+						: "";
+				const modelLine = `${modelName}${thinkingStr}`;
+
+				const accountLabel = process.env.AGENTZ_ACCOUNT_LABEL || `${os.userInfo().username}@${os.hostname()}`;
+				const cwdLine = process.cwd();
+
+				const textLines = [`${APP_NAME} CLI ${this.version}`, accountLabel, modelLine, cwdLine, ""];
+
+				const maxTextLength = Math.max(...textLines.map((l) => l.length));
+				const width = this.ui.terminal.columns || process.stdout.columns || 80;
+
+				if (width < 14 + 4 + maxTextLength) {
+					return [...coloredLogoLines, "", ...textLines.filter((l) => l.length > 0)].join("\n");
+				}
+
+				return coloredLogoLines
+					.map((logoLine, i) => {
+						if (!textLines[i]) {
+							return logoLine;
+						}
+						return `${logoLine}    ${textLines[i]}`;
+					})
+					.join("\n");
+			};
+			// Viraj's Code end
 
 			// Build startup instructions using keybinding hint helpers
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
@@ -664,13 +734,31 @@ export class InteractiveMode {
 				"dim",
 				`Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`,
 			);
+			// Viraj's Code start
+			const getCollapsedText = () => {
+				const splash = getLogoSplash();
+				if (this.startupHelpMode === "off") {
+					return splash;
+				}
+				return `${splash}\n\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`;
+			};
+
+			const getExpandedText = () => {
+				const splash = getLogoSplash();
+				if (this.startupHelpMode === "off") {
+					return splash;
+				}
+				return `${splash}\n\n${expandedInstructions}\n\n${onboarding}`;
+			};
+
 			this.builtInHeader = new ExpandableText(
-				() => `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
-				() => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
+				getCollapsedText,
+				getExpandedText,
 				this.getStartupExpansionState(),
 				1,
 				0,
 			);
+			// Viraj's Code end
 
 			// Setup UI layout
 			this.headerContainer.addChild(new Spacer(1));
@@ -969,7 +1057,9 @@ export class InteractiveMode {
 	}
 
 	private getStartupExpansionState(): boolean {
-		return this.options.verbose || this.toolOutputExpanded;
+		// Viraj's Code start
+		return this.toolOutputExpanded;
+		// Viraj's Code end
 	}
 
 	/**
@@ -1309,6 +1399,11 @@ export class InteractiveMode {
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
+		// Viraj's Code start
+		if (this.startupHelpMode === "off") {
+			return;
+		}
+		// Viraj's Code end
 		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
@@ -2486,6 +2581,29 @@ export class InteractiveMode {
 		}
 	}
 
+	// Viraj's Code start
+	private handleStartupHelpCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		const mode = parts[1];
+		if (mode === "status") {
+			this.showStatus(`Startup help mode: ${this.startupHelpMode}`);
+		} else if (mode === "compact" || mode === "verbose" || mode === "off") {
+			this.startupHelpMode = mode;
+			this.toolOutputExpanded = mode === "verbose";
+			if (isExpandable(this.builtInHeader)) {
+				this.builtInHeader.setExpanded(this.toolOutputExpanded);
+			}
+			this.chatContainer.clear();
+			this.showLoadedResources();
+			this.rebuildChatFromMessages();
+			this.ui.requestRender();
+			this.showStatus(`Startup help mode set to: ${mode}`);
+		} else {
+			this.showWarning("Usage: /startup-help <status|compact|verbose|off>");
+		}
+	}
+	// Viraj's Code end
+
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
@@ -2548,6 +2666,13 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			// Viraj's Code start
+			if (text === "/startup-help" || text.startsWith("/startup-help ")) {
+				this.handleStartupHelpCommand(text);
+				this.editor.setText("");
+				return;
+			}
+			// Viraj's Code end
 			if (text === "/fork") {
 				this.showUserMessageSelector();
 				this.editor.setText("");

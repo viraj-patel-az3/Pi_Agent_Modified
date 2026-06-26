@@ -307,6 +307,33 @@ describe("parseArgs", () => {
 		});
 	});
 
+	// Viraj's Code start
+	describe("--startup-help flag", () => {
+		test("parses --startup-help with valid modes", () => {
+			expect(parseArgs(["--startup-help", "compact"]).startupHelpMode).toBe("compact");
+			expect(parseArgs(["--startup-help", "verbose"]).startupHelpMode).toBe("verbose");
+			expect(parseArgs(["--startup-help", "off"]).startupHelpMode).toBe("off");
+		});
+
+		test("parses --startup-help as boolean alias for verbose", () => {
+			expect(parseArgs(["--startup-help"]).startupHelpMode).toBe("verbose");
+			expect(parseArgs(["--startup-help", "-p", "hello"]).startupHelpMode).toBe("verbose");
+		});
+
+		test("parses --no-startup-help as boolean alias for off", () => {
+			expect(parseArgs(["--no-startup-help"]).startupHelpMode).toBe("off");
+		});
+
+		test("parses --verbose-help as setting startupHelpMode to verbose", () => {
+			expect(parseArgs(["--verbose-help"]).startupHelpMode).toBe("verbose");
+		});
+
+		test("parses --verbose as setting startupHelpMode to verbose", () => {
+			expect(parseArgs(["--verbose"]).startupHelpMode).toBe("verbose");
+		});
+	});
+	// Viraj's Code end
+
 	describe("tool flags", () => {
 		test("parses --no-tools flag", () => {
 			const result = parseArgs(["--no-tools"]);

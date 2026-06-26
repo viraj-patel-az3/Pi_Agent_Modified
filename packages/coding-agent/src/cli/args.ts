@@ -9,7 +9,15 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
+// Viraj's Code start
+export type StartupHelpMode = "compact" | "verbose" | "off";
+export const DEFAULT_STARTUP_HELP_MODE: StartupHelpMode = "off";
+// Viraj's Code end
+
 export interface Args {
+	// Viraj's Code start
+	startupHelpMode?: StartupHelpMode;
+	// Viraj's Code end
 	provider?: string;
 	model?: string;
 	apiKey?: string;
@@ -176,6 +184,30 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
+			// Viraj's Code start
+			result.startupHelpMode = "verbose";
+			// Viraj's Code end
+			// Viraj's Code start
+		} else if (arg === "--startup-help") {
+			const next = args[i + 1];
+			if (next === "compact" || next === "verbose" || next === "off") {
+				result.startupHelpMode = next;
+				i++;
+			} else if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+				result.diagnostics.push({
+					type: "warning",
+					message: `Invalid startup help mode "${next}". Valid values: compact, verbose, off. Defaulting to verbose.`,
+				});
+				result.startupHelpMode = "verbose";
+				i++;
+			} else {
+				result.startupHelpMode = "verbose";
+			}
+		} else if (arg === "--no-startup-help") {
+			result.startupHelpMode = "off";
+		} else if (arg === "--verbose-help") {
+			result.startupHelpMode = "verbose";
+			// Viraj's Code end
 		} else if (arg === "--offline") {
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
@@ -266,6 +298,9 @@ ${chalk.bold("Options:")}
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
+// Viraj's Code start
+  --startup-help <mode>          Startup help mode: compact, verbose, or off; default: off
+// Viraj's Code end
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --help, -h                     Show this help
   --version, -v                  Show version number
