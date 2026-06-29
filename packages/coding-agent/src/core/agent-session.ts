@@ -247,9 +247,7 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
-// Viraj's code — placeholder, Joseph will provide the real implementation
 async function ZZ3EVAL(source: string): Promise<string> {
-	// TODO: replace with Joseph's ZZ3EVAL implementation
 	return source;
 }
 
@@ -286,6 +284,12 @@ export class AgentSession {
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
+
+	// Viraj's Code Start
+	// Viraj's code — z3eval mode state
+	// When true, all free-form input is evaluated as z3eval expressions (no leading '=' needed).
+	private _z3evalMode = false;
+	// Viraj's Code End
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -1086,6 +1090,7 @@ export class AgentSession {
 
 		return String(value);
 	}
+	// Viraj's Code End
 
 	/**
 	 * Send a prompt to the agent.
@@ -1098,82 +1103,100 @@ export class AgentSession {
 	 */
 
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		const trimmedText = text.trimStart();
-		//Viraj's code
-		if (trimmedText.startsWith("=")) {
-			const expression = trimmedText.slice(1).trim();
-			const value = Function(`"use strict"; return (${expression});`)();
-			const result = this._formatResult(value);
-
-			const interceptMsg: CustomMessage = {
-				role: "custom",
-				content: `${result}\n`,
-				display: true,
-				timestamp: Date.now(),
-			};
-
-			const emit = this._handleAgentEvent;
-			this.agent.state.messages.push(interceptMsg);
-
-			await emit({ type: "message_start", message: interceptMsg });
-			await emit({ type: "message_end", message: interceptMsg });
-
-			options?.preflightResult?.(true);
-			return;
-		}
-
-		// Viraj's code — Z3 file detection
-		if (trimmedText.endsWith(".z3")) {
-			try {
-				const content = readFileSync(trimmedText, "utf-8");
-				const result = await ZZ3EVAL(content);
-
-				const interceptMsg: CustomMessage = {
-					role: "custom",
-					content: `${result}\n`,
-					display: true,
-					timestamp: Date.now(),
-				};
-
-				const emit = this._handleAgentEvent;
-				this.agent.state.messages.push(interceptMsg);
-
-				await emit({ type: "message_start", message: interceptMsg });
-				await emit({ type: "message_end", message: interceptMsg });
-
-				options?.preflightResult?.(true);
-				return;
-			} catch (err) {
-				const errorMsg = err instanceof Error ? err.message : String(err);
-				const interceptMsg: CustomMessage = {
-					role: "custom",
-					content: `Failed to read or evaluate Z3 file: ${errorMsg}\n`,
-					display: true,
-					timestamp: Date.now(),
-				};
-
-				const emit = this._handleAgentEvent;
-				this.agent.state.messages.push(interceptMsg);
-
-				await emit({ type: "message_start", message: interceptMsg });
-				await emit({ type: "message_end", message: interceptMsg });
-
-				options?.preflightResult?.(true);
-				return;
-			}
-		}
-
+		// Viraj's Code Start
+		const originalText = text;
 		const interpolated = text.replace(/\{=([^}]+)\}/g, (_match, inner: string) => {
 			return inner.trim().toUpperCase();
 		});
+		const hadInterpolation = interpolated !== originalText;
 
-		if (interpolated !== text) {
+		if (hadInterpolation) {
 			await this.sendCustomMessage({
 				customType: "intercept",
 				content: interpolated,
 				display: true,
 			});
 		}
+		// Viraj's Code End
+
+		const trimmedText = text.trimStart();
+		// Viraj's Code Start
+
+		const emitIntercept = async (msgContent: string): Promise<void> => {
+			const interceptMsg: CustomMessage = {
+				role: "custom",
+				content: msgContent,
+				display: true,
+				timestamp: Date.now(),
+			};
+			const emit = this._handleAgentEvent;
+			this.agent.state.messages.push(interceptMsg);
+			await emit({ type: "message_start", message: interceptMsg });
+			await emit({ type: "message_end", message: interceptMsg });
+		};
+
+		// "=" alone → switch z3eval mode ON
+		if (trimmedText === "=") {
+			this._z3evalMode = true;
+			await emitIntercept('[z3eval mode ON — type expressions directly, "." alone to exit]\n');
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		// "." alone → switch z3eval mode OFF
+		if (trimmedText === ".") {
+			this._z3evalMode = false;
+			await emitIntercept("[z3eval mode OFF]\n");
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		// "= <expr>" → one-shot eval, does NOT toggle mode
+		if (trimmedText.startsWith("=") && trimmedText.length > 1) {
+			const expression = trimmedText.slice(1).trim();
+			try {
+				const value = Function(`"use strict"; return (${expression});`)();
+				await emitIntercept(`${this._formatResult(value)}\n`);
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				await emitIntercept(`Error: ${errorMsg}\n`);
+			}
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		// "<file>.z3" → evaluate via ZZ3EVAL, then turn z3eval mode OFF
+		if (trimmedText.endsWith(".z3")) {
+			const wasInZblackMode = this._z3evalMode;
+			try {
+				const fileContent = readFileSync(trimmedText, "utf-8");
+				const result = await ZZ3EVAL(fileContent);
+				await emitIntercept(`${result}\n`);
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				await emitIntercept(`Failed to read or evaluate Z3 file: ${errorMsg}\n`);
+			}
+			if (wasInZblackMode) {
+				this._z3evalMode = false;
+				await emitIntercept("[z3eval mode OFF — .z3 file processed]\n");
+			}
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		// z3eval mode ON → evaluate any input as a zblack expression (no "=" needed)
+		if (this._z3evalMode && !hadInterpolation) {
+			try {
+				const value = Function(`"use strict"; return (${interpolated});`)();
+				await emitIntercept(`${this._formatResult(value)}\n`);
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				await emitIntercept(`Error: ${errorMsg}\n`);
+			}
+			options?.preflightResult?.(true);
+			return;
+		}
+		// Viraj's Code End
 
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
