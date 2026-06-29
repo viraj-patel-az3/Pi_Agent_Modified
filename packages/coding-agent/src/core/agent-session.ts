@@ -1135,6 +1135,30 @@ export class AgentSession {
 			await emit({ type: "message_end", message: interceptMsg });
 		};
 
+		// /z-mode slash commands
+		if (trimmedText === "/z-mode=on") {
+			this._z3evalMode = true;
+			await emitIntercept('[z3eval mode ON — type expressions directly, "." alone to exit]\n');
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		if (trimmedText === "/z-mode=off") {
+			this._z3evalMode = false;
+			await emitIntercept("[z3eval mode OFF]\n");
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		if (trimmedText === "/z-mode") {
+			this._z3evalMode = !this._z3evalMode;
+			const status = this._z3evalMode ? "ON" : "OFF";
+			const hint = this._z3evalMode ? ' — type expressions directly, "." alone to exit' : "";
+			await emitIntercept(`[z3eval mode ${status}${hint}]\n`);
+			options?.preflightResult?.(true);
+			return;
+		}
+
 		// "=" alone → switch z3eval mode ON
 		if (trimmedText === "=") {
 			this._z3evalMode = true;
@@ -1156,7 +1180,7 @@ export class AgentSession {
 			const expression = trimmedText.slice(1).trim();
 			try {
 				const value = Function(`"use strict"; return (${expression});`)();
-				await emitIntercept(`${this._formatResult(value)}\n`);
+				await emitIntercept(`${expression} = ${this._formatResult(value)}\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
 				await emitIntercept(`Error: ${errorMsg}\n`);
@@ -1188,7 +1212,7 @@ export class AgentSession {
 		if (this._z3evalMode && !hadInterpolation) {
 			try {
 				const value = Function(`"use strict"; return (${interpolated});`)();
-				await emitIntercept(`${this._formatResult(value)}\n`);
+				await emitIntercept(`${trimmedText} = ${this._formatResult(value)}\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
 				await emitIntercept(`Error: ${errorMsg}\n`);
