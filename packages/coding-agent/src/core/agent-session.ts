@@ -1103,31 +1103,13 @@ export class AgentSession {
 	 */
 
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		// Viraj's Code Start
-		const originalText = text;
-		const interpolated = text.replace(/\{=([^}]+)\}/g, (_match, inner: string) => {
-			return inner.trim().toUpperCase();
-		});
-		const hadInterpolation = interpolated !== originalText;
-
-		if (hadInterpolation) {
-			await this.sendCustomMessage({
-				customType: "intercept",
-				content: interpolated,
-				display: true,
-			});
-		}
-		// Viraj's Code End
-
-		const trimmedText = text.trimStart();
-		// Viraj's Code Start
-
 		const emitIntercept = async (msgContent: string): Promise<void> => {
-			const interceptMsg: CustomMessage = {
+			const interceptMsg: CustomMessage & { customType?: string } = {
 				role: "custom",
 				content: msgContent,
 				display: true,
 				timestamp: Date.now(),
+				customType: "intercept",
 			};
 			const emit = this._handleAgentEvent;
 			this.agent.state.messages.push(interceptMsg);
@@ -1135,6 +1117,38 @@ export class AgentSession {
 			await emit({ type: "message_end", message: interceptMsg });
 		};
 
+		const originalText = text;
+		let hadInterpolation = false;
+		const standaloneBlocks: string[] = [];
+
+		text = text.replace(/\{=\s*([^}]+?)\s*\}/g, (match, inner) => {
+			hadInterpolation = true;
+			const innerTrimmed = inner.trim();
+			let resultStr: string;
+			try {
+				const value = Function(`"use strict"; return (${innerTrimmed});`)();
+				if (value !== undefined && value !== null && !Number.isNaN(value as any)) {
+					resultStr = this._formatResult(value);
+				} else {
+					resultStr = innerTrimmed.toUpperCase();
+				}
+			} catch (err) {
+				resultStr = innerTrimmed.toUpperCase();
+			}
+			standaloneBlocks.push(`${innerTrimmed}\n${resultStr}`);
+			return resultStr;
+		});
+
+		const textWithoutBlocks = originalText.replace(/\{=\s*([^}]+?)\s*\}/g, "").trim();
+		const isFullyLocal = hadInterpolation && textWithoutBlocks === "";
+
+		if (isFullyLocal) {
+			await emitIntercept(`${standaloneBlocks.join("\n\n")}\n`);
+			options?.preflightResult?.(true);
+			return;
+		}
+
+		const trimmedText = text.trimStart();
 		// /z-mode slash commands
 		if (trimmedText === "/z-mode=on") {
 			this._z3evalMode = true;
@@ -1211,7 +1225,7 @@ export class AgentSession {
 		// z3eval mode ON → evaluate any input as a zblack expression (no "=" needed)
 		if (this._z3evalMode && !hadInterpolation) {
 			try {
-				const value = Function(`"use strict"; return (${interpolated});`)();
+				const value = Function(`"use strict"; return (${text});`)();
 				await emitIntercept(`${trimmedText} = ${this._formatResult(value)}\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1229,8 +1243,8 @@ export class AgentSession {
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
-			if (expandPromptTemplates && interpolated.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(interpolated);
+			if (expandPromptTemplates && text.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(text);
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
@@ -1239,7 +1253,7 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			let currentText = interpolated;
+			let currentText = text;
 			let currentImages = options?.images;
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(

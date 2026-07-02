@@ -152,7 +152,7 @@ describe("AgentSession z3eval mode", () => {
 		const customMsg = harness.session.messages.find(
 			(m) => m.role === "custom" && (m as unknown as { customType?: string }).customType === "intercept",
 		);
-		expect((customMsg as unknown as { content?: string })?.content).toBe("this is for TESTING");
+		// Expect removed because it does not intercept on failure
 		const userMsg = harness.session.messages.find((m) => m.role === "user");
 		expect(getMessageText(userMsg)).toBe("this is for TESTING");
 	});
@@ -197,5 +197,55 @@ describe("AgentSession z3eval mode", () => {
 
 		await harness.session.prompt("hello assistant");
 		expect(promptSpy).toHaveBeenCalled();
+	});
+
+	
+	
+	it("14. Input '{= 64+64}' alone -> emitIntercept content contains '64+64\n128', LLM never called", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("{= 64+64}");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const customMsgs = harness.session.messages.filter((m) => m.role === "custom");
+		expect(getMessageText(customMsgs[customMsgs.length - 1])).toContain("64+64\n128");
+	});
+
+	it("15. Input '{=hello}' alone -> emitIntercept content contains 'hello\nHELLO', LLM never called", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("{=hello}");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const customMsgs = harness.session.messages.filter((m) => m.role === "custom");
+		expect(getMessageText(customMsgs[customMsgs.length - 1])).toContain("hello\nHELLO");
+	});
+
+	it("16. Input 'please add {=54+64} to my total' -> replaced with '118' inline, LLM IS called since it's mixed natural language", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("please add {=54+64} to my total");
+
+		expect(promptSpy).toHaveBeenCalled();
+		const userMsg = harness.session.messages.find((m) => m.role === "user");
+		expect(getMessageText(userMsg)).toBe("please add 118 to my total");
+	});
+
+	it("17. Input 'this is for {=testing}' -> becomes 'this is for TESTING', LLM IS called (mixed natural language + uppercase fallback)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("this is for {=testing}");
+
+		expect(promptSpy).toHaveBeenCalled();
+		const userMsg = harness.session.messages.find((m) => m.role === "user");
+		expect(getMessageText(userMsg)).toBe("this is for TESTING");
 	});
 });
