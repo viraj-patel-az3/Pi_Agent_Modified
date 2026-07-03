@@ -247,10 +247,6 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
-async function ZZ3EVAL(source: string): Promise<string> {
-	return source;
-}
-
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -289,6 +285,18 @@ export class AgentSession {
 	// Viraj's code — z3eval mode state
 	// When true, all free-form input is evaluated as z3eval expressions (no leading '=' needed).
 	private _z3evalMode = false;
+
+	public setZ3evalMode(enabled: boolean): void {
+		this._z3evalMode = enabled;
+	}
+
+	public get z3evalMode(): boolean {
+		return this._z3evalMode;
+	}
+
+	public _resolveLocally(expression: string): any {
+		return Function(`"use strict"; return (${expression});`)();
+	}
 	// Viraj's Code End
 
 	// Bash execution state
@@ -1071,7 +1079,7 @@ export class AgentSession {
 		return [headerLine, dividerLine, ...dataLines, ...nestedSections].join("\n");
 	}
 
-	private _formatResult(value: unknown): string {
+	public _formatResult(value: unknown): string {
 		if (this._isArrayOfObjects(value)) {
 			return this._formatTable(value);
 		}
@@ -1121,18 +1129,18 @@ export class AgentSession {
 		let hadInterpolation = false;
 		const standaloneBlocks: string[] = [];
 
-		text = text.replace(/\{=\s*([^}]+?)\s*\}/g, (match, inner) => {
+		text = text.replace(/\{=\s*([^}]+?)\s*\}/g, (_match, inner) => {
 			hadInterpolation = true;
 			const innerTrimmed = inner.trim();
 			let resultStr: string;
 			try {
-				const value = Function(`"use strict"; return (${innerTrimmed});`)();
+				const value = this._resolveLocally(innerTrimmed);
 				if (value !== undefined && value !== null && !Number.isNaN(value as any)) {
 					resultStr = this._formatResult(value);
 				} else {
 					resultStr = innerTrimmed.toUpperCase();
 				}
-			} catch (err) {
+			} catch (_err) {
 				resultStr = innerTrimmed.toUpperCase();
 			}
 			standaloneBlocks.push(`${innerTrimmed}\n${resultStr}`);
@@ -1193,7 +1201,7 @@ export class AgentSession {
 		if (trimmedText.startsWith("=") && trimmedText.length > 1) {
 			const expression = trimmedText.slice(1).trim();
 			try {
-				const value = Function(`"use strict"; return (${expression});`)();
+				const value = this._resolveLocally(expression);
 				await emitIntercept(`${expression} = ${this._formatResult(value)}\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1203,20 +1211,34 @@ export class AgentSession {
 			return;
 		}
 
-		// "<file>.z3" → evaluate via ZZ3EVAL, then turn z3eval mode OFF
-		if (trimmedText.endsWith(".z3")) {
-			const wasInZblackMode = this._z3evalMode;
+		// "run <file>.z3" → evaluate via _resolveLocally, keeping z3eval mode ON
+		const runMatch = trimmedText.match(/^run\s+(.+\.z3)$/);
+		if (runMatch) {
+			const filename = runMatch[1];
 			try {
-				const fileContent = readFileSync(trimmedText, "utf-8");
-				const result = await ZZ3EVAL(fileContent);
-				await emitIntercept(`${result}\n`);
+				const resolvedPath = resolvePath(filename, this._cwd);
+				console.debug(JSON.stringify(resolvedPath));
+				const fileContent = readFileSync(resolvedPath, "utf-8");
+				const lines = fileContent.split("\n");
+				let processedCount = 0;
+				for (const line of lines) {
+					const lineTrimmed = line.trim();
+					if (!lineTrimmed || lineTrimmed.startsWith("#") || lineTrimmed.startsWith("//")) {
+						continue;
+					}
+					try {
+						const val = this._resolveLocally(lineTrimmed);
+						const formatted = this._formatResult(val);
+						await emitIntercept(`${lineTrimmed} = ${formatted}\n`);
+					} catch (_err) {
+						await emitIntercept(`${lineTrimmed}\n`);
+					}
+					processedCount++;
+				}
+				await emitIntercept(`Loaded ${processedCount} expressions from ${basename(resolvedPath)}.\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
 				await emitIntercept(`Failed to read or evaluate Z3 file: ${errorMsg}\n`);
-			}
-			if (wasInZblackMode) {
-				this._z3evalMode = false;
-				await emitIntercept("[z3eval mode OFF — .z3 file processed]\n");
 			}
 			options?.preflightResult?.(true);
 			return;
@@ -1225,7 +1247,7 @@ export class AgentSession {
 		// z3eval mode ON → evaluate any input as a zblack expression (no "=" needed)
 		if (this._z3evalMode && !hadInterpolation) {
 			try {
-				const value = Function(`"use strict"; return (${text});`)();
+				const value = this._resolveLocally(text);
 				await emitIntercept(`${trimmedText} = ${this._formatResult(value)}\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);

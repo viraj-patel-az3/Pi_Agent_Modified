@@ -59,6 +59,8 @@ export interface Args {
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
 	unknownFlags: Map<string, boolean | string>;
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
+	repl?: boolean;
+	z3File?: string;
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -212,6 +214,8 @@ export function parseArgs(args: string[]): Args {
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
+		} else if (arg === "--repl" || arg === "-i") {
+			result.repl = true;
 		} else if (arg.startsWith("--")) {
 			const eqIndex = arg.indexOf("=");
 			if (eqIndex !== -1) {
@@ -229,7 +233,11 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg.startsWith("-") && !arg.startsWith("--")) {
 			result.diagnostics.push({ type: "error", message: `Unknown option: ${arg}` });
 		} else if (!arg.startsWith("-")) {
-			result.messages.push(arg);
+			if (arg.endsWith(".z3") && !result.z3File) {
+				result.z3File = arg;
+			} else {
+				result.messages.push(arg);
+			}
 		}
 	}
 

@@ -6,6 +6,7 @@
  */
 
 import * as fs from "node:fs";
+import { basename } from "node:path";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
@@ -773,6 +774,46 @@ export async function main(args: string[], options?: MainOptions) {
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
 		process.exit(1);
+	}
+
+	if (parsed.z3File) {
+		const filePath = resolvePath(parsed.z3File, cwd);
+		if (!fs.existsSync(filePath)) {
+			console.error(`Error: could not read file ${filePath}: ENOENT`);
+			process.exit(1);
+		}
+		let processedCount = 0;
+		try {
+			const content = fs.readFileSync(filePath, "utf-8");
+			const lines = content.split("\n");
+			session.setZ3evalMode(true);
+			for (const line of lines) {
+				const trimmed = line.trim();
+				if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+					continue;
+				}
+				try {
+					const val = session._resolveLocally(trimmed);
+					const formatted = session._formatResult(val);
+					console.log(`${trimmed} = ${formatted}`);
+				} catch (_err) {
+					console.log(trimmed); // Silent fallback
+				}
+				processedCount++;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error(`Error: could not read file ${filePath}: ${msg}`);
+			process.exit(1);
+		}
+
+		if (!parsed.repl) {
+			console.log(`Processed ${processedCount} expressions from ${basename(filePath)}.`);
+			process.exit(0);
+		} else {
+			console.log('[z3eval mode ON — type expressions directly, "." alone to exit]');
+			appMode = "interactive"; // Force interactive mode
+		}
 	}
 
 	if (appMode === "rpc") {

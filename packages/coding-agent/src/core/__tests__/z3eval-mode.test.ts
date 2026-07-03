@@ -149,7 +149,7 @@ describe("AgentSession z3eval mode", () => {
 		await harness.session.prompt("this is for {=testing}");
 
 		expect(promptSpy).toHaveBeenCalled();
-		const customMsg = harness.session.messages.find(
+		const _customMsg = harness.session.messages.find(
 			(m) => m.role === "custom" && (m as unknown as { customType?: string }).customType === "intercept",
 		);
 		// Expect removed because it does not intercept on failure
@@ -199,8 +199,6 @@ describe("AgentSession z3eval mode", () => {
 		expect(promptSpy).toHaveBeenCalled();
 	});
 
-	
-	
 	it("14. Input '{= 64+64}' alone -> emitIntercept content contains '64+64\n128', LLM never called", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -247,5 +245,29 @@ describe("AgentSession z3eval mode", () => {
 		expect(promptSpy).toHaveBeenCalled();
 		const userMsg = harness.session.messages.find((m) => m.role === "user");
 		expect(getMessageText(userMsg)).toBe("this is for TESTING");
+	});
+
+	it("18. 'run <filename>.z3' loads file and executes sequentially, leaving mode ON and extracting filename correctly", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
+
+		const fs = await import("node:fs");
+		const path = await import("node:path");
+		const testFile = "test-eval-18.z3";
+		const testFilePath = path.join((harness.session as any)._cwd, testFile);
+		fs.writeFileSync(testFilePath, "10 + 20\n30 + 40", "utf-8");
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		expect((harness.session as unknown as { _z3evalMode: boolean })._z3evalMode).toBe(true);
+
+		const allMessages = harness.session.messages.map((m) => getMessageText(m)).join("\n");
+		expect(allMessages).not.toContain("OFF");
+		expect(allMessages).toContain("10 + 20 = 30");
+		expect(allMessages).toContain("30 + 40 = 70");
+		expect(allMessages).toContain(`Loaded 2 expressions from ${testFile}.`);
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
 	});
 });
