@@ -92,7 +92,7 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts"
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 //Viraj's code start
-import { tryEvaluateFocusedExpression } from "./z3eval-expression.ts";
+import { FocusedExpressionSyntaxError, tryEvaluateFocusedExpression } from "./z3eval-expression.ts";
 //Viraj's code end
 
 // ============================================================================
@@ -316,6 +316,64 @@ export class AgentSession {
 			return focusedResult.value;
 		}
 		return this._resolveJavaScriptLocally(expression);
+	}
+
+	private _shouldSurfaceInlineLocalEvalError(error: unknown): boolean {
+		return error instanceof FocusedExpressionSyntaxError || error instanceof SyntaxError;
+	}
+
+	private _interpolateLocalEvalBlocks(text: string): {
+		text: string;
+		hadInterpolation: boolean;
+		standaloneBlocks: LocalEvalEntry[];
+		errorEntry?: LocalEvalEntry;
+	} {
+		const pattern = /\{=\s*([^}]+?)\s*\}/g;
+		const standaloneBlocks: LocalEvalEntry[] = [];
+		let hadInterpolation = false;
+		let cursor = 0;
+		let interpolatedText = "";
+		let match: RegExpExecArray | null;
+
+		while ((match = pattern.exec(text)) !== null) {
+			hadInterpolation = true;
+			interpolatedText += text.slice(cursor, match.index);
+			cursor = match.index + match[0].length;
+
+			const innerTrimmed = match[1].trim();
+
+			try {
+				const value = this._resolveLocally(innerTrimmed);
+				standaloneBlocks.push({ query: innerTrimmed, result: this._formatResult(value) });
+				const inlineResult = this._formatInlineLocalEvalValue(value);
+				interpolatedText += inlineResult ?? innerTrimmed.toUpperCase();
+			} catch (error) {
+				if (this._shouldSurfaceInlineLocalEvalError(error)) {
+					const errorMessage = error instanceof Error ? error.message : String(error);
+					return {
+						text,
+						hadInterpolation,
+						standaloneBlocks,
+						errorEntry: { query: innerTrimmed, result: `Error: ${errorMessage}` },
+					};
+				}
+
+				const fallbackResult = innerTrimmed.toUpperCase();
+				standaloneBlocks.push({ query: innerTrimmed, result: fallbackResult });
+				interpolatedText += fallbackResult;
+			}
+		}
+
+		if (!hadInterpolation) {
+			return { text, hadInterpolation, standaloneBlocks };
+		}
+
+		interpolatedText += text.slice(cursor);
+		return {
+			text: interpolatedText,
+			hadInterpolation,
+			standaloneBlocks,
+		};
 	}
 	//Viraj's code end
 
@@ -1346,37 +1404,28 @@ export class AgentSession {
 		//Viraj's code end
 
 		const originalText = text;
-		let hadInterpolation = false;
 		//Viraj's code start
-		const standaloneBlocks: LocalEvalEntry[] = [];
+		const interpolationResult = this._interpolateLocalEvalBlocks(text);
+		const hadInterpolation = interpolationResult.hadInterpolation;
+		const standaloneBlocks = interpolationResult.standaloneBlocks;
+		text = interpolationResult.text;
+		if (interpolationResult.errorEntry) {
+			await this._emitLocalEvalEntries(this._handleAgentEvent, [interpolationResult.errorEntry]);
+			options?.preflightResult?.(true);
+			return;
+		}
 		//Viraj's code end
-
-		text = text.replace(/\{=\s*([^}]+?)\s*\}/g, (_match, inner) => {
-			hadInterpolation = true;
-			const innerTrimmed = inner.trim();
-			let resultStr: string;
-			try {
-				const value = this._resolveLocally(innerTrimmed);
-				standaloneBlocks.push({ query: innerTrimmed, result: this._formatResult(value) });
-				const inlineResult = this._formatInlineLocalEvalValue(value);
-				if (inlineResult !== undefined) {
-					resultStr = inlineResult;
-				} else {
-					resultStr = innerTrimmed.toUpperCase();
-				}
-			} catch (_err) {
-				resultStr = innerTrimmed.toUpperCase();
-				standaloneBlocks.push({ query: innerTrimmed, result: resultStr });
-			}
-			return resultStr;
-		});
 
 		const textWithoutBlocks = originalText.replace(/\{=\s*([^}]+?)\s*\}/g, "").trim();
 		const isFullyLocal = hadInterpolation && textWithoutBlocks === "";
 
 		if (isFullyLocal) {
 			//Viraj's code start
-			await this._emitLocalEvalEntries(this._handleAgentEvent, standaloneBlocks);
+			if (standaloneBlocks.length > 1) {
+				await emitIntercept(`${text}\n`);
+			} else {
+				await this._emitLocalEvalEntries(this._handleAgentEvent, standaloneBlocks);
+			}
 			//Viraj's code end
 			options?.preflightResult?.(true);
 			return;

@@ -594,5 +594,124 @@ describe("AgentSession z3eval mode", () => {
 		expect(result).toContain("Key values:");
 		expect(result).toContain("Item 2:");
 	});
+
+	//Viraj's code start
+	it("34. inline interpolation replaces a single placeholder synchronously without emitting [object Promise]", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("23+{=23+23}");
+
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		const userMessages = harness.session.messages.filter((message) => message.role === "user");
+		expect(userMessages).toHaveLength(1);
+		expect(getMessageText(userMessages[0])).toBe("23+46");
+		expect(getMessageText(userMessages[0])).not.toContain("[object Promise]");
+	});
+
+	it("35. inline interpolation supports multiple repeated and adjacent placeholders", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("ok"), fauxAssistantMessage("ok")]);
+
+		await harness.session.prompt("{=20+3}+{=40+6}");
+		await harness.session.prompt("{=2+2}, {=2+2}, {=2+2}");
+		await harness.session.prompt("{=2+1}{=4+2}");
+
+		const userMessages = harness.session.messages.filter((message) => message.role === "user");
+		expect(getMessageText(userMessages[0])).toBe("23+46");
+		expect(getMessageText(userMessages[1])).toBe("4, 4, 4");
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1];
+		expect(getMessageText(lastMessage)).toContain("36");
+		expect(harness.session.messages.map((message) => getMessageText(message)).join("\n")).not.toContain(
+			"[object Promise]",
+		);
+	});
+
+	it("36. inline interpolation preserves surrounding text including start and end placeholders", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+		]);
+
+		await harness.session.prompt("{=20+3} apples");
+		await harness.session.prompt("Total: {=40+6}");
+		await harness.session.prompt("Before {=10+5} after");
+		await harness.session.prompt("ordinary prompt text");
+
+		const userMessages = harness.session.messages.filter((message) => message.role === "user");
+		expect(getMessageText(userMessages[0])).toBe("23 apples");
+		expect(getMessageText(userMessages[1])).toBe("Total: 46");
+		expect(getMessageText(userMessages[2])).toBe("Before 15 after");
+		expect(getMessageText(userMessages[3])).toBe("ordinary prompt text");
+	});
+
+	it("37. inline interpolation preserves falsy scalar results", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+			fauxAssistantMessage("ok"),
+		]);
+
+		await harness.session.prompt("Value: {=0}");
+		await harness.session.prompt("Flag: {=false}");
+		await harness.session.prompt("Blank:{=\"\"}");
+		await harness.session.prompt("Null:{=null}");
+		await harness.session.prompt("Undefined:{=undefined}");
+
+		const userMessages = harness.session.messages.filter((message) => message.role === "user");
+		expect(getMessageText(userMessages[0])).toBe("Value: 0");
+		expect(getMessageText(userMessages[1])).toBe("Flag: false");
+		expect(getMessageText(userMessages[2])).toBe("Blank:");
+		expect(getMessageText(userMessages[3])).toBe("Null:");
+		expect(getMessageText(userMessages[4])).toBe("Undefined:");
+	});
+
+	it("38. invalid inline expressions use the local-eval error path and do not call the LLM", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("23+{=23+}");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const userMessages = harness.session.messages.filter((message) => message.role === "user");
+		expect(userMessages).toHaveLength(0);
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			role: string;
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.role).toBe("custom");
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries).toEqual([
+			{
+				query: "23+",
+				result: expect.stringContaining("Error:"),
+			},
+		]);
+		expect(getMessageText(lastMessage)).not.toContain("[object Promise]");
+	});
+
+	it("39. direct local evaluation is synchronous and not a Promise", () => {
+		const harnessPromise = createHarness();
+		return harnessPromise.then((harness) => {
+			harnesses.push(harness);
+			const result = harness.session._resolveLocally("23+23");
+			expect(result).not.toBeInstanceOf(Promise);
+			expect(result).toBe(46);
+		});
+	});
+	//Viraj's code end
 	//Viraj's code end
 });
