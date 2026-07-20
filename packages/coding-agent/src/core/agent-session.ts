@@ -91,6 +91,9 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+//Viraj's code start
+import { tryEvaluateFocusedExpression } from "./z3eval-expression.ts";
+//Viraj's code end
 
 // ============================================================================
 // Skill Block Parsing
@@ -240,6 +243,17 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+//Viraj's code start
+interface LocalEvalEntry {
+	query: string;
+	result: string;
+}
+
+interface LocalEvalMessageDetails {
+	entries: LocalEvalEntry[];
+}
+//Viraj's code end
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -281,9 +295,7 @@ export class AgentSession {
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
 
-	// Viraj's Code Start
-	// Viraj's code — z3eval mode state
-	// When true, all free-form input is evaluated as z3eval expressions (no leading '=' needed).
+	//Viraj's code start
 	private _z3evalMode = false;
 
 	public setZ3evalMode(enabled: boolean): void {
@@ -294,10 +306,18 @@ export class AgentSession {
 		return this._z3evalMode;
 	}
 
-	public _resolveLocally(expression: string): any {
+	private _resolveJavaScriptLocally(expression: string): unknown {
 		return Function(`"use strict"; return (${expression});`)();
 	}
-	// Viraj's Code End
+
+	public _resolveLocally(expression: string): unknown {
+		const focusedResult = tryEvaluateFocusedExpression(expression);
+		if (focusedResult.kind === "value") {
+			return focusedResult.value;
+		}
+		return this._resolveJavaScriptLocally(expression);
+	}
+	//Viraj's code end
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -989,7 +1009,7 @@ export class AgentSession {
 		return this.agent.hasQueuedMessages();
 	}
 
-	//Viraj's code
+	//Viraj's code start
 	private _isPlainObject(value: unknown): value is Record<string, unknown> {
 		if (value === null || typeof value !== "object" || Array.isArray(value)) {
 			return false;
@@ -997,91 +1017,136 @@ export class AgentSession {
 		return true;
 	}
 
-	private _isArrayOfObjects(value: unknown): value is Record<string, unknown>[] {
-		return Array.isArray(value) && value.length > 0 && value.every((item) => this._isPlainObject(item));
+	private _isSimpleScalar(value: unknown): boolean {
+		return (
+			value === null ||
+			value === undefined ||
+			typeof value === "string" ||
+			typeof value === "number" ||
+			typeof value === "boolean" ||
+			typeof value === "bigint"
+		);
 	}
 
-	private _padCell(value: unknown, width: number): string {
+	private _isSimpleArray(value: unknown): value is unknown[] {
+		return Array.isArray(value) && value.every((item) => this._isSimpleScalar(item));
+	}
+
+	private _isSimpleObjectRow(value: unknown): value is Record<string, unknown> {
+		return this._isPlainObject(value) && Object.values(value).every((cell) => this._isSimpleScalar(cell));
+	}
+
+	private _isSimpleObjectTable(value: unknown): value is Record<string, unknown>[] {
+		return Array.isArray(value) && value.length > 0 && value.every((item) => this._isSimpleObjectRow(item));
+	}
+
+	private _isSimpleMatrix(value: unknown): value is unknown[][] {
+		if (!Array.isArray(value) || value.length === 0 || !value.every((row) => Array.isArray(row) && row.length > 0)) {
+			return false;
+		}
+
+		const matrix = value as unknown[][];
+		const rowLengths = new Set(matrix.map((row) => row.length));
+		return rowLengths.size === 1 && matrix.every((row) => row.every((cell: unknown) => this._isSimpleScalar(cell)));
+	}
+
+	private _escapeMarkdownCell(value: unknown): string {
 		const text = value == null ? "" : String(value);
-		return text.padEnd(width, " ");
+		const escaped = text.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
+		return escaped.length > 0 ? escaped : " ";
+	}
+
+	private _stringifyLocalEvalValue(value: unknown): string {
+		if (this._isPlainObject(value) || Array.isArray(value)) {
+			return JSON.stringify(value, null, 2);
+		}
+		return value == null ? "" : String(value);
+	}
+
+	private _formatInlineLocalEvalValue(value: unknown): string | undefined {
+		if (this._isSimpleScalar(value)) {
+			return this._stringifyLocalEvalValue(value);
+		}
+		return undefined;
+	}
+
+	private _formatMarkdownTable(headers: string[], rows: unknown[][]): string {
+		const headerLine = `| ${headers.map((header) => this._escapeMarkdownCell(header)).join(" | ")} |`;
+		const dividerLine = `| ${headers.map(() => "---").join(" | ")} |`;
+		const dataLines = rows.map((row) => `| ${row.map((cell) => this._escapeMarkdownCell(cell)).join(" | ")} |`);
+		return [headerLine, dividerLine, ...dataLines].join("\n");
+	}
+
+	private _formatSimpleObjectTable(rows: Record<string, unknown>[]): string {
+		const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+		return this._formatMarkdownTable(
+			headers,
+			rows.map((row) => headers.map((header) => row[header])),
+		);
+	}
+
+	private _formatIndexedArray(values: unknown[]): string {
+		return this._formatMarkdownTable(
+			["Index", "Value"],
+			values.map((item, index) => [index, item]),
+		);
+	}
+
+	private _formatMatrix(value: unknown[][]): string {
+		const headers = ["Row", ...Array.from({ length: value[0].length }, (_item, index) => `Column ${index + 1}`)];
+		return this._formatMarkdownTable(
+			headers,
+			value.map((row, index) => [index, ...row]),
+		);
 	}
 
 	private _formatKeyValueObject(obj: Record<string, unknown>): string {
 		return Object.entries(obj)
-			.map(([key, value]) => `${key}: ${value == null ? "" : String(value)}`)
+			.map(([key, value]) => `${key}: ${this._stringifyLocalEvalValue(value)}`)
 			.join("\n");
 	}
 
-	private _formatTable(rows: Record<string, unknown>[]): string {
-		if (rows.length === 0) {
-			return "(empty table)";
+	private _formatResultSection(title: string, value: unknown): string | undefined {
+		if (this._isSimpleObjectTable(value)) {
+			return `${title}:\n${this._formatSimpleObjectTable(value)}`;
 		}
-
-		const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-
-		const widths = headers.map((header) => {
-			const cellWidths = rows.map((row) => {
-				const cell = row[header];
-				if (
-					Array.isArray(cell) &&
-					cell.length > 0 &&
-					cell.every((x) => x !== null && typeof x === "object" && !Array.isArray(x))
-				)
-					return `[table: ${(cell as unknown[]).length} rows]`.length;
-				if (Array.isArray(cell)) return JSON.stringify(cell).length;
-				if (cell !== null && typeof cell === "object" && !Array.isArray(cell)) return "{...}".length;
-				return String(cell ?? "").length;
-			});
-			return Math.max(header.length, ...cellWidths);
-		});
-
-		const headerLine = headers.map((header, i) => this._padCell(header, widths[i])).join(" | ");
-
-		const dividerLine = widths.map((w) => "-".repeat(w)).join("-+-");
-
-		const dataLines = rows.map((row) =>
-			headers
-				.map((header, i) => {
-					const cell = row[header];
-					let display: string;
-					if (
-						Array.isArray(cell) &&
-						cell.length > 0 &&
-						cell.every((x) => x !== null && typeof x === "object" && !Array.isArray(x))
-					) {
-						display = `[table: ${cell.length} rows]`;
-					} else if (Array.isArray(cell)) {
-						display = JSON.stringify(cell);
-					} else if (cell !== null && typeof cell === "object" && !Array.isArray(cell)) {
-						display = "{...}";
-					} else {
-						display = cell == null ? "" : String(cell);
-					}
-					return this._padCell(display, widths[i]);
-				})
-				.join(" | "),
-		);
-
-		const nestedSections: string[] = [];
-		for (const header of headers) {
-			for (const row of rows) {
-				const cell = row[header];
-				if (
-					Array.isArray(cell) &&
-					cell.length > 0 &&
-					cell.every((x) => x !== null && typeof x === "object" && !Array.isArray(x))
-				) {
-					nestedSections.push(`\n[${header}]:\n${this._formatTable(cell as Record<string, unknown>[])}`);
-				}
-			}
+		if (this._isSimpleArray(value)) {
+			return `${title}:\n${this._formatIndexedArray(value)}`;
 		}
-
-		return [headerLine, dividerLine, ...dataLines, ...nestedSections].join("\n");
+		if (this._isSimpleMatrix(value)) {
+			return `${title}:\n${this._formatMatrix(value)}`;
+		}
+		return undefined;
 	}
 
+	private _emitLocalEvalEntries = async (
+		emit: typeof this._handleAgentEvent,
+		entries: LocalEvalEntry[],
+	): Promise<void> => {
+		const localEvalMessage: CustomMessage<LocalEvalMessageDetails> = {
+			role: "custom",
+			customType: "local-eval",
+			content: `${entries.map((entry) => `${entry.query}\n${entry.result}`).join("\n\n")}\n`,
+			display: true,
+			details: { entries },
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages.push(localEvalMessage);
+		await emit({ type: "message_start", message: localEvalMessage });
+		await emit({ type: "message_end", message: localEvalMessage });
+	};
+
 	public _formatResult(value: unknown): string {
-		if (this._isArrayOfObjects(value)) {
-			return this._formatTable(value);
+		if (this._isSimpleObjectTable(value)) {
+			return this._formatSimpleObjectTable(value);
+		}
+
+		if (this._isSimpleArray(value)) {
+			return this._formatIndexedArray(value);
+		}
+
+		if (this._isSimpleMatrix(value)) {
+			return this._formatMatrix(value);
 		}
 
 		if (Array.isArray(value)) {
@@ -1089,6 +1154,25 @@ export class AgentSession {
 		}
 
 		if (this._isPlainObject(value)) {
+			const entries = Object.entries(value);
+			const scalarEntries = entries.filter(([_key, entryValue]) => this._isSimpleScalar(entryValue));
+			const sectionEntries = entries.filter(([_key, entryValue]) => this._formatResultSection(_key, entryValue));
+			const complexEntries = entries.filter(
+				([key, entryValue]) =>
+					!this._isSimpleScalar(entryValue) && this._formatResultSection(key, entryValue) === undefined,
+			);
+
+			if (sectionEntries.length > 0 && complexEntries.length === 0) {
+				const scalarSection = scalarEntries
+					.map(([key, entryValue]) => `${key}: ${this._stringifyLocalEvalValue(entryValue)}`)
+					.join("\n");
+				const tableSections = sectionEntries
+					.map(([key, entryValue]) => this._formatResultSection(key, entryValue))
+					.filter((section): section is string => section !== undefined)
+					.join("\n\n");
+				return [scalarSection, tableSections].filter((section) => section.length > 0).join("\n\n");
+			}
+
 			return this._formatKeyValueObject(value);
 		}
 
@@ -1098,7 +1182,7 @@ export class AgentSession {
 
 		return String(value);
 	}
-	// Viraj's Code End
+	//Viraj's code end
 
 	/**
 	 * Send a prompt to the agent.
@@ -1111,6 +1195,7 @@ export class AgentSession {
 	 */
 
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		//Viraj's code start
 		const emitIntercept = async (msgContent: string): Promise<void> => {
 			const interceptMsg: CustomMessage & { customType?: string } = {
 				role: "custom",
@@ -1124,10 +1209,13 @@ export class AgentSession {
 			await emit({ type: "message_start", message: interceptMsg });
 			await emit({ type: "message_end", message: interceptMsg });
 		};
+		//Viraj's code end
 
 		const originalText = text;
 		let hadInterpolation = false;
-		const standaloneBlocks: string[] = [];
+		//Viraj's code start
+		const standaloneBlocks: LocalEvalEntry[] = [];
+		//Viraj's code end
 
 		text = text.replace(/\{=\s*([^}]+?)\s*\}/g, (_match, inner) => {
 			hadInterpolation = true;
@@ -1135,15 +1223,17 @@ export class AgentSession {
 			let resultStr: string;
 			try {
 				const value = this._resolveLocally(innerTrimmed);
-				if (value !== undefined && value !== null && !Number.isNaN(value as any)) {
-					resultStr = this._formatResult(value);
+				standaloneBlocks.push({ query: innerTrimmed, result: this._formatResult(value) });
+				const inlineResult = this._formatInlineLocalEvalValue(value);
+				if (inlineResult !== undefined) {
+					resultStr = inlineResult;
 				} else {
 					resultStr = innerTrimmed.toUpperCase();
 				}
 			} catch (_err) {
 				resultStr = innerTrimmed.toUpperCase();
+				standaloneBlocks.push({ query: innerTrimmed, result: resultStr });
 			}
-			standaloneBlocks.push(`${innerTrimmed}\n${resultStr}`);
 			return resultStr;
 		});
 
@@ -1151,7 +1241,9 @@ export class AgentSession {
 		const isFullyLocal = hadInterpolation && textWithoutBlocks === "";
 
 		if (isFullyLocal) {
-			await emitIntercept(`${standaloneBlocks.join("\n\n")}\n`);
+			//Viraj's code start
+			await this._emitLocalEvalEntries(this._handleAgentEvent, standaloneBlocks);
+			//Viraj's code end
 			options?.preflightResult?.(true);
 			return;
 		}
@@ -1202,10 +1294,18 @@ export class AgentSession {
 			const expression = trimmedText.slice(1).trim();
 			try {
 				const value = this._resolveLocally(expression);
-				await emitIntercept(`${expression} = ${this._formatResult(value)}\n`);
+				//Viraj's code start
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: expression, result: this._formatResult(value) },
+				]);
+				//Viraj's code end
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
-				await emitIntercept(`Error: ${errorMsg}\n`);
+				//Viraj's code start
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: expression, result: `Error: ${errorMsg}` },
+				]);
+				//Viraj's code end
 			}
 			options?.preflightResult?.(true);
 			return;
@@ -1228,10 +1328,18 @@ export class AgentSession {
 					}
 					try {
 						const val = this._resolveLocally(lineTrimmed);
-						const formatted = this._formatResult(val);
-						await emitIntercept(`${lineTrimmed} = ${formatted}\n`);
-					} catch (_err) {
-						await emitIntercept(`${lineTrimmed}\n`);
+						//Viraj's code start
+						await this._emitLocalEvalEntries(this._handleAgentEvent, [
+							{ query: lineTrimmed, result: this._formatResult(val) },
+						]);
+						//Viraj's code end
+					} catch (err) {
+						const errorMsg = err instanceof Error ? err.message : String(err);
+						//Viraj's code start
+						await this._emitLocalEvalEntries(this._handleAgentEvent, [
+							{ query: lineTrimmed, result: `Error: ${errorMsg}` },
+						]);
+						//Viraj's code end
 					}
 					processedCount++;
 				}
@@ -1248,15 +1356,22 @@ export class AgentSession {
 		if (this._z3evalMode && !hadInterpolation) {
 			try {
 				const value = this._resolveLocally(text);
-				await emitIntercept(`${trimmedText} = ${this._formatResult(value)}\n`);
+				//Viraj's code start
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: trimmedText, result: this._formatResult(value) },
+				]);
+				//Viraj's code end
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
-				await emitIntercept(`Error: ${errorMsg}\n`);
+				//Viraj's code start
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: trimmedText, result: `Error: ${errorMsg}` },
+				]);
+				//Viraj's code end
 			}
 			options?.preflightResult?.(true);
 			return;
 		}
-		// Viraj's Code End
 
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;

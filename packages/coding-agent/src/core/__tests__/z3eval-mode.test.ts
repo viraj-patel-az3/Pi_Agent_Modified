@@ -1,3 +1,7 @@
+//Viraj's code start
+import fs from "node:fs";
+import path from "node:path";
+//Viraj's code end
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../../test/suite/harness.ts";
@@ -98,7 +102,17 @@ describe("AgentSession z3eval mode", () => {
 
 		expect((harness.session as unknown as { _z3evalMode: boolean })._z3evalMode).toBe(false);
 		expect(promptSpy).not.toHaveBeenCalled();
-		expect(getMessageText(harness.session.messages[harness.session.messages.length - 1])).toContain("5 * 5 = 25");
+		//Viraj's code start
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			role: string;
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.role).toBe("custom");
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries).toEqual([{ query: "5 * 5", result: "25" }]);
+		expect(getMessageText(lastMessage)).toContain("5 * 5\n25");
+		//Viraj's code end
 	});
 
 	it("7. Free-form eval when mode is ON — '5 * 5' returns '5 * 5 = 25'", async () => {
@@ -110,7 +124,9 @@ describe("AgentSession z3eval mode", () => {
 		await harness.session.prompt("5 * 5");
 
 		expect(promptSpy).not.toHaveBeenCalled();
-		expect(getMessageText(harness.session.messages[harness.session.messages.length - 1])).toContain("5 * 5 = 25");
+		//Viraj's code start
+		expect(getMessageText(harness.session.messages[harness.session.messages.length - 1])).toContain("5 * 5\n25");
+		//Viraj's code end
 	});
 
 	it("8. Free-form eval when mode is ON — '[1,2,3].map(x=>x*x)' returns correct result", async () => {
@@ -123,10 +139,13 @@ describe("AgentSession z3eval mode", () => {
 
 		expect(promptSpy).not.toHaveBeenCalled();
 		const lastContent = getMessageText(harness.session.messages[harness.session.messages.length - 1]);
-		expect(lastContent).toContain("[1,2,3].map(x=>x*x) =");
-		expect(lastContent).toContain("1");
-		expect(lastContent).toContain("4");
-		expect(lastContent).toContain("9");
+		//Viraj's code start
+		expect(lastContent).toContain("[1,2,3].map(x=>x*x)\n");
+		expect(lastContent).toContain("| Index | Value |");
+		expect(lastContent).toContain("| 0 | 1 |");
+		expect(lastContent).toContain("| 1 | 4 |");
+		expect(lastContent).toContain("| 2 | 9 |");
+		//Viraj's code end
 	});
 
 	it("9. Free-form eval when mode is OFF — '5 * 5' does NOT intercept (falls through to LLM)", async () => {
@@ -208,7 +227,15 @@ describe("AgentSession z3eval mode", () => {
 
 		expect(promptSpy).not.toHaveBeenCalled();
 		const customMsgs = harness.session.messages.filter((m) => m.role === "custom");
-		expect(getMessageText(customMsgs[customMsgs.length - 1])).toContain("64+64\n128");
+		//Viraj's code start
+		const lastCustom = customMsgs[customMsgs.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastCustom.customType).toBe("local-eval");
+		expect(lastCustom.details?.entries).toEqual([{ query: "64+64", result: "128" }]);
+		expect(getMessageText(lastCustom)).toContain("64+64\n128");
+		//Viraj's code end
 	});
 
 	it("15. Input '{=hello}' alone -> emitIntercept content contains 'hello\nHELLO', LLM never called", async () => {
@@ -220,7 +247,9 @@ describe("AgentSession z3eval mode", () => {
 
 		expect(promptSpy).not.toHaveBeenCalled();
 		const customMsgs = harness.session.messages.filter((m) => m.role === "custom");
+		//Viraj's code start
 		expect(getMessageText(customMsgs[customMsgs.length - 1])).toContain("hello\nHELLO");
+		//Viraj's code end
 	});
 
 	it("16. Input 'please add {=54+64} to my total' -> replaced with '118' inline, LLM IS called since it's mixed natural language", async () => {
@@ -247,13 +276,12 @@ describe("AgentSession z3eval mode", () => {
 		expect(getMessageText(userMsg)).toBe("this is for TESTING");
 	});
 
+	//Viraj's code start
 	it("18. 'run <filename>.z3' loads file and executes sequentially, leaving mode ON and extracting filename correctly", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
 
-		const fs = await import("node:fs");
-		const path = await import("node:path");
 		const testFile = "test-eval-18.z3";
 		const testFilePath = path.join((harness.session as any)._cwd, testFile);
 		fs.writeFileSync(testFilePath, "10 + 20\n30 + 40", "utf-8");
@@ -264,10 +292,206 @@ describe("AgentSession z3eval mode", () => {
 
 		const allMessages = harness.session.messages.map((m) => getMessageText(m)).join("\n");
 		expect(allMessages).not.toContain("OFF");
-		expect(allMessages).toContain("10 + 20 = 30");
-		expect(allMessages).toContain("30 + 40 = 70");
+		//Viraj's code start
+		expect(allMessages).toContain("10 + 20\n30");
+		expect(allMessages).toContain("30 + 40\n70");
+		//Viraj's code end
 		expect(allMessages).toContain(`Loaded 2 expressions from ${testFile}.`);
 
 		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
 	});
+	//Viraj's code end
+
+	//Viraj's code start
+	it("19. one-shot local eval renders simple object arrays as markdown tables", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [{name:'a', score:1}, {name:'b', score:2}]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| name | score |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| a | 1 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| b | 2 |");
+	});
+
+	it("20. one-shot local eval renders matrices with a leading row column", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [[1,2],[3,4]]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 | Column 2 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | 1 | 2 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 1 | 3 | 4 |");
+	});
+
+	it("21. one-shot local eval renders single-column matrices with row indexes", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [[-1479.50],[-1399.66]]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | -1479.5 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 1 | -1399.66 |");
+	});
+
+	it("22. one-shot local eval keeps ragged arrays on the fallback path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [[1,2],[3]]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("[\n  [\n    1,\n    2\n  ],\n  [\n    3\n  ]\n]");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("| Row |");
+	});
+
+	it("23. continuous mode evaluates SIN ranges locally and keeps mode enabled", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("SIN(1..10)");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect((harness.session as unknown as { _z3evalMode: boolean })._z3evalMode).toBe(true);
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.query).toBe("SIN(1..10)");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Index | Value |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 9 |");
+		expect(getMessageText(lastMessage)).not.toContain("[object Promise]");
+	});
+
+	it("24. one-shot PMT scalar evaluation stays local and returns the expected payment", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= PMT(10%,10,10000,0,1)");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		const payment = Number(lastMessage.details?.entries?.[0]?.result ?? "");
+		expect(payment).toBeCloseTo(-1479.5035898410138, 12);
+	});
+
+	it("25. vectorized PMT results render with the existing single-column matrix table", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= PMT(10%,10..20,10000,0,1)");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | -1479.5035898410138 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 10 |");
+	});
+
+	it("26. focused evaluator validation errors stay local and preserve continuous mode", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("PMT(10%,0,10000,0,1)");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect((harness.session as unknown as { _z3evalMode: boolean })._z3evalMode).toBe(true);
+		expect(getMessageText(harness.session.messages[harness.session.messages.length - 1])).toContain(
+			"Error: nper cannot be zero",
+		);
+	});
+
+	it("27. inline focused syntax keeps mixed text inline for scalar values", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("rate is {= 10% } today");
+
+		expect(promptSpy).toHaveBeenCalled();
+		const userMsg = harness.session.messages.find((message) => message.role === "user");
+		expect(getMessageText(userMsg)).toBe("rate is 0.1 today");
+	});
+
+	it("28. plain JavaScript arrays continue to work through the fallback path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [10,20,30]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			details?: { entries?: Array<{ result: string }> };
+		};
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Index | Value |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | 10 |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 2 | 30 |");
+	});
+
+	it("29. .z3 execution uses the shared evaluator for focused syntax", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
+		const testFile = "test-eval-29.z3";
+		const testFilePath = path.join((harness.session as any)._cwd, testFile);
+		fs.writeFileSync(testFilePath, "SIN(1..3)\nPMT(10%,10,10000,0,1)", "utf-8");
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		const allMessages = harness.session.messages.map((message) => getMessageText(message)).join("\n");
+		expect(allMessages).toContain("SIN(1..3)");
+		expect(allMessages).toContain("| Index | Value |");
+		expect(allMessages).toContain("PMT(10%,10,10000,0,1)");
+		expect(allMessages).toContain("-1479.5035898410138");
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+	//Viraj's code end
 });
