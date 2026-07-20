@@ -1017,6 +1017,8 @@ export class AgentSession {
 		return true;
 	}
 
+	private _maxLocalEvalDisplayDepth = 5;
+
 	private _isSimpleScalar(value: unknown): boolean {
 		return (
 			value === null ||
@@ -1056,9 +1058,54 @@ export class AgentSession {
 		return escaped.length > 0 ? escaped : " ";
 	}
 
+	private _isRenderableContainer(value: unknown): value is Record<string, unknown> | unknown[] {
+		return Array.isArray(value) || this._isPlainObject(value);
+	}
+
+	private _describeLocalEvalValue(value: unknown): string {
+		if (Array.isArray(value)) {
+			return "array";
+		}
+		if (this._isPlainObject(value)) {
+			return "object";
+		}
+		if (value === null) {
+			return "null";
+		}
+		return typeof value;
+	}
+
+	private _safeSerializeLocalEvalValue(value: unknown, maxDepth = this._maxLocalEvalDisplayDepth): string {
+		const seen = new WeakSet<object>();
+		const normalize = (currentValue: unknown, depth: number): unknown => {
+			if (!this._isRenderableContainer(currentValue)) {
+				return currentValue;
+			}
+
+			if (seen.has(currentValue)) {
+				return "[Circular Reference]";
+			}
+
+			if (depth >= maxDepth) {
+				return "Maximum display depth reached";
+			}
+
+			seen.add(currentValue);
+			if (Array.isArray(currentValue)) {
+				return currentValue.map((item) => normalize(item, depth + 1));
+			}
+
+			return Object.fromEntries(
+				Object.entries(currentValue).map(([key, entryValue]) => [key, normalize(entryValue, depth + 1)]),
+			);
+		};
+
+		return JSON.stringify(normalize(value, 0), null, 2);
+	}
+
 	private _stringifyLocalEvalValue(value: unknown): string {
 		if (this._isPlainObject(value) || Array.isArray(value)) {
-			return JSON.stringify(value, null, 2);
+			return this._safeSerializeLocalEvalValue(value);
 		}
 		return value == null ? "" : String(value);
 	}
@@ -1106,6 +1153,93 @@ export class AgentSession {
 			.join("\n");
 	}
 
+	private _formatNestedArrayTable(value: unknown[], depth: number, seen: WeakSet<object>): string {
+		if (seen.has(value)) {
+			return "[Circular Reference]";
+		}
+		if (depth >= this._maxLocalEvalDisplayDepth) {
+			return "Maximum display depth reached";
+		}
+
+		seen.add(value);
+		const nestedSections: string[] = [];
+		const rows = value.map((item, index) => {
+			if (!this._isRenderableContainer(item)) {
+				return [index, this._describeLocalEvalValue(item), this._stringifyLocalEvalValue(item)];
+			}
+
+			if (seen.has(item)) {
+				return [index, this._describeLocalEvalValue(item), "[Circular Reference]"];
+			}
+
+			if (depth + 1 >= this._maxLocalEvalDisplayDepth) {
+				return [index, this._describeLocalEvalValue(item), "Maximum display depth reached"];
+			}
+
+			const label = `Item ${index}`;
+			nestedSections.push(`${label}:\n${this._formatNestedLocalEvalValue(item, depth + 1, seen)}`);
+			return [index, this._describeLocalEvalValue(item), `See ${label}`];
+		});
+		seen.delete(value);
+
+		const table = this._formatMarkdownTable(["Index", "Type", "Value"], rows);
+		return nestedSections.length > 0 ? `${table}\n\n${nestedSections.join("\n\n")}` : table;
+	}
+
+	private _formatNestedObjectTable(value: Record<string, unknown>, depth: number, seen: WeakSet<object>): string {
+		if (seen.has(value)) {
+			return "[Circular Reference]";
+		}
+		if (depth >= this._maxLocalEvalDisplayDepth) {
+			return "Maximum display depth reached";
+		}
+
+		seen.add(value);
+		const nestedSections: string[] = [];
+		const rows = Object.entries(value).map(([key, entryValue]) => {
+			if (!this._isRenderableContainer(entryValue)) {
+				return [key, this._describeLocalEvalValue(entryValue), this._stringifyLocalEvalValue(entryValue)];
+			}
+
+			if (seen.has(entryValue)) {
+				return [key, this._describeLocalEvalValue(entryValue), "[Circular Reference]"];
+			}
+
+			if (depth + 1 >= this._maxLocalEvalDisplayDepth) {
+				return [key, this._describeLocalEvalValue(entryValue), "Maximum display depth reached"];
+			}
+
+			const label = `Key ${key}`;
+			nestedSections.push(`${label}:\n${this._formatNestedLocalEvalValue(entryValue, depth + 1, seen)}`);
+			return [key, this._describeLocalEvalValue(entryValue), `See ${label}`];
+		});
+		seen.delete(value);
+
+		const table = this._formatMarkdownTable(["Key", "Type", "Value"], rows);
+		return nestedSections.length > 0 ? `${table}\n\n${nestedSections.join("\n\n")}` : table;
+	}
+
+	private _formatNestedLocalEvalValue(
+		value: Record<string, unknown> | unknown[],
+		depth: number,
+		seen: WeakSet<object>,
+	): string {
+		if (Array.isArray(value)) {
+			if (this._isSimpleObjectTable(value)) {
+				return this._formatSimpleObjectTable(value);
+			}
+			if (this._isSimpleArray(value)) {
+				return this._formatIndexedArray(value);
+			}
+			if (this._isSimpleMatrix(value)) {
+				return this._formatMatrix(value);
+			}
+			return this._formatNestedArrayTable(value, depth, seen);
+		}
+
+		return this._formatNestedObjectTable(value, depth, seen);
+	}
+
 	private _formatResultSection(title: string, value: unknown): string | undefined {
 		if (this._isSimpleObjectTable(value)) {
 			return `${title}:\n${this._formatSimpleObjectTable(value)}`;
@@ -1150,7 +1284,7 @@ export class AgentSession {
 		}
 
 		if (Array.isArray(value)) {
-			return JSON.stringify(value, null, 2);
+			return this._formatNestedLocalEvalValue(value, 0, new WeakSet<object>());
 		}
 
 		if (this._isPlainObject(value)) {
@@ -1173,7 +1307,7 @@ export class AgentSession {
 				return [scalarSection, tableSections].filter((section) => section.length > 0).join("\n\n");
 			}
 
-			return this._formatKeyValueObject(value);
+			return this._formatNestedLocalEvalValue(value, 0, new WeakSet<object>());
 		}
 
 		if (value == null) {

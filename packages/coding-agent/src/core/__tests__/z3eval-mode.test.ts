@@ -357,7 +357,7 @@ describe("AgentSession z3eval mode", () => {
 		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 1 | -1399.66 |");
 	});
 
-	it("22. one-shot local eval keeps ragged arrays on the fallback path", async () => {
+	it("22. one-shot local eval renders ragged arrays as nested tables without matrix formatting", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
@@ -370,8 +370,10 @@ describe("AgentSession z3eval mode", () => {
 			details?: { entries?: Array<{ query: string; result: string }> };
 		};
 		expect(lastMessage.customType).toBe("local-eval");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("[\n  [\n    1,\n    2\n  ],\n  [\n    3\n  ]\n]");
-		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("| Row |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Index | Type | Value |");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("Item 0:");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("Item 1:");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("| Row | Column 1 |");
 	});
 
 	it("23. continuous mode evaluates SIN ranges locally and keeps mode enabled", async () => {
@@ -492,6 +494,105 @@ describe("AgentSession z3eval mode", () => {
 		expect(allMessages).toContain("-1479.5035898410138");
 
 		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("30. deeply nested arrays and objects render nested tables without object coercion", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt(`= [
+			"root",
+			[
+				"level-1",
+				[
+					"level-2",
+					[
+						"level-3",
+						{
+							name: "nested-object",
+							values: [1, 2, [3, 4]]
+						}
+					]
+				]
+			],
+			{
+				section: "object-section",
+				children: [
+					{
+						id: 1,
+						children: [
+							{
+								id: 2,
+								children: []
+							}
+						]
+					}
+				]
+			}
+		]`);
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			details?: { entries?: Array<{ result: string }> };
+		};
+		const result = lastMessage.details?.entries?.[0]?.result ?? "";
+		expect(result).toContain("| Index | Type | Value |");
+		expect(result).toContain("| 0 | string | root |");
+		expect(result).toContain("Item 1:");
+		expect(result).toContain("Item 2:");
+		expect(result).toContain("| Key | Type | Value |");
+		expect(result).toContain("nested-object");
+		expect(result).not.toContain("[object Object]");
+	});
+
+	it("31. nested values exceeding the display depth show the maximum-depth fallback", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [[[[[[['too-deep']]]]]]]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			details?: { entries?: Array<{ result: string }> };
+		};
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("Maximum display depth reached");
+	});
+
+	it("32. circular arrays render a circular-reference placeholder without crashing", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= (() => { const circularArray = ['root']; circularArray.push(circularArray); return circularArray; })()");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			details?: { entries?: Array<{ result: string }> };
+		};
+		const result = lastMessage.details?.entries?.[0]?.result ?? "";
+		expect(result).toContain("[Circular Reference]");
+		expect(result).toContain("| Index | Type | Value |");
+	});
+
+	it("33. mixed primitive, object, and nested-array values remain readable in local rendering", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt("= [1, { label: 'object', values: [2, 3] }, ['nested', { ok: true }], false]");
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			details?: { entries?: Array<{ result: string }> };
+		};
+		const result = lastMessage.details?.entries?.[0]?.result ?? "";
+		expect(result).toContain("| Index | Type | Value |");
+		expect(result).toContain("| 0 | number | 1 |");
+		expect(result).toContain("| 3 | boolean | false |");
+		expect(result).toContain("Key values:");
+		expect(result).toContain("Item 2:");
 	});
 	//Viraj's code end
 });
