@@ -712,6 +712,226 @@ describe("AgentSession z3eval mode", () => {
 			expect(result).toBe(46);
 		});
 	});
+	//Viraj's Code Start
+	it("40. JavaScript baseline uses generic object-expression evaluation with shared formatting", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+
+		await harness.session.prompt(`= {
+			label: "scores",
+			note: "brace { text }",
+			values: [{ name: "A", score: 1 }, { name: "B", score: 2 }]
+		}`);
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		const result = lastMessage.details?.entries?.[0]?.result ?? "";
+		expect(result).toContain("label: scores");
+		expect(result).toContain("note: brace { text }");
+		expect(result).toContain("values:");
+		expect(result).toContain("| name | score |");
+		expect(result).toContain("| A | 1 |");
+		expect(result).toContain("| B | 2 |");
+	});
+
+	it("41. run <file>.js executes prompt assignment blocks with the JavaScript evaluator", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+		const testFile = "test-eval-41.js";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`prompt = {
+  prompt: "64 + 64"
+}`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const localEvalMessages = harness.session.messages.filter(
+			(message) => message.role === "custom" && (message as { customType?: string }).customType === "local-eval",
+		) as Array<{ details?: { entries?: Array<{ query: string; result: string }> } }>;
+		expect(localEvalMessages[0].details?.entries).toEqual([{ query: "64 + 64", result: "128" }]);
+		const allMessages = harness.session.messages.map((message) => getMessageText(message)).join("\n");
+		expect(allMessages).toContain(`Loaded 1 expressions from ${testFile}.`);
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("42. run <file>.z3 groups multiline object expressions and keeps processing later expressions", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		(harness.session as unknown as { _z3evalMode: boolean })._z3evalMode = true;
+
+		const testFile = "test-eval-42.z3";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`{
+  label: "scores",
+  note: "brace { text }",
+  values: [
+    { name: "A", score: 1 },
+    { name: "B", score: 2 }
+  ]
+}
+64 + 64`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		const localEvalMessages = harness.session.messages.filter(
+			(message) => message.role === "custom" && (message as { customType?: string }).customType === "local-eval",
+		) as Array<{ details?: { entries?: Array<{ query: string; result: string }> } }>;
+		expect(localEvalMessages).toHaveLength(2);
+		const objectEntry = localEvalMessages[0].details?.entries?.[0];
+		expect(objectEntry?.query).toContain(`label: "scores"`);
+		expect(objectEntry?.result).toContain("label: scores");
+		expect(objectEntry?.result).toContain("note: brace { text }");
+		expect(objectEntry?.result).toContain("| name | score |");
+		expect(objectEntry?.result).toContain("| A | 1 |");
+		expect(objectEntry?.result).toContain("| B | 2 |");
+		expect(localEvalMessages[1].details?.entries?.[0]).toEqual({ query: "64 + 64", result: "128" });
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("43. run <file>.z3 executes prompt assignment blocks through focused Z3 first", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+		const testFile = "test-eval-43.z3";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`prompt = {
+  prompt: "1..3"
+}`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const localEvalMessages = harness.session.messages.filter(
+			(message) => message.role === "custom" && (message as { customType?: string }).customType === "local-eval",
+		) as Array<{ details?: { entries?: Array<{ query: string; result: string }> } }>;
+		const result = localEvalMessages[0].details?.entries?.[0]?.result ?? "";
+		expect(localEvalMessages[0].details?.entries?.[0]?.query).toBe("1..3");
+		expect(result).toContain("| Index | Value |");
+		expect(result).toContain("| 2 | 3 |");
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("44. run <file>.js reports prompt block schema errors through local eval", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+		const testFile = "test-eval-44.js";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`prompt = {
+  name: "missing"
+}`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		const lastMessage = harness.session.messages[harness.session.messages.length - 2] as {
+			customType?: string;
+			details?: { entries?: Array<{ query: string; result: string }> };
+		};
+		expect(lastMessage.customType).toBe("local-eval");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain(
+			'Error: Prompt block must contain a "prompt" property.',
+		);
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("45. run <file>.js reports invalid prompt values and inner expressions through local eval", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const testFile = "test-eval-45.js";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`prompt = {
+  prompt: 123
+}
+
+prompt = {
+  prompt: [
+    "2 + 3",
+    123
+  ]
+}
+
+prompt = {
+  prompt: ""
+}
+
+prompt = {
+  prompt: "2 +"
+}`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		const localEvalText = harness.session.messages
+			.filter(
+				(message) => message.role === "custom" && (message as { customType?: string }).customType === "local-eval",
+			)
+			.map((message) => getMessageText(message))
+			.join("\n");
+		expect(localEvalText).toContain('Error: Prompt block "prompt" property must be a string or array of strings.');
+		expect(localEvalText).toContain("Error: Prompt block prompt entry 2 must be a string.");
+		expect(localEvalText).toContain("Error: Prompt block prompt entries must not be empty.");
+		expect(localEvalText).toContain("2 +\nError:");
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+
+	it("46. run <file>.js reports unterminated prompt blocks without crashing", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const testFile = "test-eval-46.js";
+		const testFilePath = path.join((harness.session as unknown as { _cwd: string })._cwd, testFile);
+		fs.writeFileSync(
+			testFilePath,
+			`prompt = {
+  prompt: "2 + 3"
+`,
+			"utf-8",
+		);
+
+		await harness.session.prompt(`run ${testFile}`);
+
+		const localEvalText = harness.session.messages
+			.filter(
+				(message) => message.role === "custom" && (message as { customType?: string }).customType === "local-eval",
+			)
+			.map((message) => getMessageText(message))
+			.join("\n");
+		expect(localEvalText).toContain("Error: Invalid prompt block syntax:");
+
+		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+	});
+	//Viraj's Code end
 	//Viraj's code end
 	//Viraj's code end
 });

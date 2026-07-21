@@ -78,6 +78,14 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+//Viraj's Code Start
+import {
+	getLocalEvalFileType,
+	type LocalEvalFileType,
+	parseLocalEvalFileBlock,
+	splitLocalEvalFileBlocks,
+} from "./local-eval-file-blocks.ts";
+//Viraj's Code end
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -318,6 +326,15 @@ export class AgentSession {
 		return this._resolveJavaScriptLocally(expression);
 	}
 
+	//Viraj's Code Start
+	public _resolveLocalEvalFileExpression(fileType: LocalEvalFileType, expression: string): unknown {
+		if (fileType === "js") {
+			return this._resolveJavaScriptLocally(expression);
+		}
+		return this._resolveLocally(expression);
+	}
+	//Viraj's Code end
+
 	private _shouldSurfaceInlineLocalEvalError(error: unknown): boolean {
 		return error instanceof FocusedExpressionSyntaxError || error instanceof SyntaxError;
 	}
@@ -335,7 +352,10 @@ export class AgentSession {
 		let interpolatedText = "";
 		let match: RegExpExecArray | null;
 
-		while ((match = pattern.exec(text)) !== null) {
+		//Viraj's Code Start
+		match = pattern.exec(text);
+		while (match !== null) {
+			//Viraj's Code end
 			hadInterpolation = true;
 			interpolatedText += text.slice(cursor, match.index);
 			cursor = match.index + match[0].length;
@@ -362,6 +382,10 @@ export class AgentSession {
 				standaloneBlocks.push({ query: innerTrimmed, result: fallbackResult });
 				interpolatedText += fallbackResult;
 			}
+
+			//Viraj's Code Start
+			match = pattern.exec(text);
+			//Viraj's Code end
 		}
 
 		if (!hadInterpolation) {
@@ -1205,12 +1229,6 @@ export class AgentSession {
 		);
 	}
 
-	private _formatKeyValueObject(obj: Record<string, unknown>): string {
-		return Object.entries(obj)
-			.map(([key, value]) => `${key}: ${this._stringifyLocalEvalValue(value)}`)
-			.join("\n");
-	}
-
 	private _formatNestedArrayTable(value: unknown[], depth: number, seen: WeakSet<object>): string {
 		if (seen.has(value)) {
 			return "[Circular Reference]";
@@ -1494,46 +1512,60 @@ export class AgentSession {
 			return;
 		}
 
-		// "run <file>.z3" → evaluate via _resolveLocally, keeping z3eval mode ON
-		const runMatch = trimmedText.match(/^run\s+(.+\.z3)$/);
+		//Viraj's Code Start
+		// "run <file>.js|.z3" evaluates prompt files through the local evaluator for that extension.
+		const runMatch = trimmedText.match(/^run\s+(.+\.[A-Za-z0-9]+)$/);
 		if (runMatch) {
 			const filename = runMatch[1];
+			const fileType = getLocalEvalFileType(filename);
+			if (!fileType) {
+				await emitIntercept(`Unsupported local evaluation file extension: ${filename}\n`);
+				options?.preflightResult?.(true);
+				return;
+			}
 			try {
 				const resolvedPath = resolvePath(filename, this._cwd);
 				console.debug(JSON.stringify(resolvedPath));
 				const fileContent = readFileSync(resolvedPath, "utf-8");
-				const lines = fileContent.split("\n");
+				const blocks = splitLocalEvalFileBlocks(fileContent);
 				let processedCount = 0;
-				for (const line of lines) {
-					const lineTrimmed = line.trim();
-					if (!lineTrimmed || lineTrimmed.startsWith("#") || lineTrimmed.startsWith("//")) {
-						continue;
-					}
+				for (const block of blocks) {
+					let expressions: string[];
 					try {
-						const val = this._resolveLocally(lineTrimmed);
-						//Viraj's code start
-						await this._emitLocalEvalEntries(this._handleAgentEvent, [
-							{ query: lineTrimmed, result: this._formatResult(val) },
-						]);
-						//Viraj's code end
+						const parsedBlock = parseLocalEvalFileBlock(block);
+						expressions = parsedBlock.kind === "prompt" ? parsedBlock.prompts : [parsedBlock.expression];
 					} catch (err) {
 						const errorMsg = err instanceof Error ? err.message : String(err);
-						//Viraj's code start
 						await this._emitLocalEvalEntries(this._handleAgentEvent, [
-							{ query: lineTrimmed, result: `Error: ${errorMsg}` },
+							{ query: block, result: `Error: ${errorMsg}` },
 						]);
-						//Viraj's code end
+						processedCount++;
+						continue;
 					}
-					processedCount++;
+					for (const expression of expressions) {
+						try {
+							const val = this._resolveLocalEvalFileExpression(fileType, expression);
+							await this._emitLocalEvalEntries(this._handleAgentEvent, [
+								{ query: expression, result: this._formatResult(val) },
+							]);
+						} catch (err) {
+							const errorMsg = err instanceof Error ? err.message : String(err);
+							await this._emitLocalEvalEntries(this._handleAgentEvent, [
+								{ query: expression, result: `Error: ${errorMsg}` },
+							]);
+						}
+						processedCount++;
+					}
 				}
 				await emitIntercept(`Loaded ${processedCount} expressions from ${basename(resolvedPath)}.\n`);
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
-				await emitIntercept(`Failed to read or evaluate Z3 file: ${errorMsg}\n`);
+				await emitIntercept(`Failed to read or evaluate local evaluation file: ${errorMsg}\n`);
 			}
 			options?.preflightResult?.(true);
 			return;
 		}
+		//Viraj's Code end
 
 		// z3eval mode ON → evaluate any input as a zblack expression (no "=" needed)
 		if (this._z3evalMode && !hadInterpolation) {

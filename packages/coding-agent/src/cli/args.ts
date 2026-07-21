@@ -61,6 +61,9 @@ export interface Args {
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 	repl?: boolean;
 	z3File?: string;
+	//Viraj's Code Start
+	jsFile?: string;
+	//Viraj's Code end
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -232,12 +235,17 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg.startsWith("-") && !arg.startsWith("--")) {
 			result.diagnostics.push({ type: "error", message: `Unknown option: ${arg}` });
+			//Viraj's Code Start
 		} else if (!arg.startsWith("-")) {
-			if (arg.endsWith(".z3") && !result.z3File) {
+			const lowerArg = arg.toLowerCase();
+			if (lowerArg.endsWith(".z3") && !result.z3File) {
 				result.z3File = arg;
+			} else if (lowerArg.endsWith(".js") && !result.jsFile) {
+				result.jsFile = arg;
 			} else {
 				result.messages.push(arg);
 			}
+			//Viraj's Code end
 		}
 	}
 

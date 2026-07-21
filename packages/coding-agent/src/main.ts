@@ -29,6 +29,13 @@ import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
+//Viraj's Code Start
+import {
+	getLocalEvalFileType,
+	parseLocalEvalFileBlock,
+	splitLocalEvalFileBlocks,
+} from "./core/local-eval-file-blocks.ts";
+//Viraj's Code end
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
@@ -776,8 +783,15 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	if (parsed.z3File) {
-		const filePath = resolvePath(parsed.z3File, cwd);
+	//Viraj's Code Start
+	const localEvalFile = parsed.z3File ?? parsed.jsFile;
+	if (localEvalFile) {
+		const filePath = resolvePath(localEvalFile, cwd);
+		const fileType = getLocalEvalFileType(filePath);
+		if (!fileType) {
+			console.error(`Error: unsupported local evaluation file ${filePath}`);
+			process.exit(1);
+		}
 		if (!fs.existsSync(filePath)) {
 			console.error(`Error: could not read file ${filePath}: ENOENT`);
 			process.exit(1);
@@ -785,21 +799,30 @@ export async function main(args: string[], options?: MainOptions) {
 		let processedCount = 0;
 		try {
 			const content = fs.readFileSync(filePath, "utf-8");
-			const lines = content.split("\n");
-			session.setZ3evalMode(true);
-			for (const line of lines) {
-				const trimmed = line.trim();
-				if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+			const blocks = splitLocalEvalFileBlocks(content);
+			if (fileType === "z3") {
+				session.setZ3evalMode(true);
+			}
+			for (const block of blocks) {
+				let expressions: string[];
+				try {
+					const parsedBlock = parseLocalEvalFileBlock(block);
+					expressions = parsedBlock.kind === "prompt" ? parsedBlock.prompts : [parsedBlock.expression];
+				} catch (_err) {
+					console.log(block);
+					processedCount++;
 					continue;
 				}
-				try {
-					const val = session._resolveLocally(trimmed);
-					const formatted = session._formatResult(val);
-					console.log(`${trimmed} = ${formatted}`);
-				} catch (_err) {
-					console.log(trimmed); // Silent fallback
+				for (const expression of expressions) {
+					try {
+						const val = session._resolveLocalEvalFileExpression(fileType, expression);
+						const formatted = session._formatResult(val);
+						console.log(`${expression} = ${formatted}`);
+					} catch (_err) {
+						console.log(expression);
+					}
+					processedCount++;
 				}
-				processedCount++;
 			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -815,6 +838,7 @@ export async function main(args: string[], options?: MainOptions) {
 			appMode = "interactive"; // Force interactive mode
 		}
 	}
+	//Viraj's Code end
 
 	if (appMode === "rpc") {
 		printTimings();
