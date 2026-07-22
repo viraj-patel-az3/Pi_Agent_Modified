@@ -66,6 +66,9 @@ export interface HarnessOptions {
 	resourceLoader?: ResourceLoader;
 	extensionFactories?: Array<ExtensionFactory | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
+	//Viraj's Code Start
+	sessionManager?: SessionManager;
+	//Viraj's Code End
 }
 
 export interface Harness {
@@ -103,7 +106,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
-	const sessionManager = SessionManager.inMemory();
+	//Viraj's Code Start
+	const sessionManager = options.sessionManager ?? SessionManager.inMemory();
+	//Viraj's Code End
 	const settingsManager = SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();

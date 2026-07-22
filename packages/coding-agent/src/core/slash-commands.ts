@@ -36,6 +36,12 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: "Manually compact the session context" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+	//Viraj's Code Start
+	{ name: "persist", description: "Persist variables, or save them with /persist session [name]" },
+	{ name: "unpersist", description: "Stop persisting selected local variables" },
+	{ name: "restoresession", description: "Restore or list named local-state snapshots" },
+	{ name: "deletesession", description: "Delete a named local-state snapshot" },
+	//Viraj's Code End
 	// Viraj's Code start
 	{ name: "startup-help", description: "Control AgentZ startup help visibility" },
 	// Viraj's Code end

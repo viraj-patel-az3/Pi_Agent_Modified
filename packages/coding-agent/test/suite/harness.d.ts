@@ -24,6 +24,7 @@ export interface HarnessOptions {
     resourceLoader?: ResourceLoader;
     extensionFactories?: Array<ExtensionFactory | CreateTestExtensionsResultInput>;
     withConfiguredAuth?: boolean;
+    sessionManager?: SessionManager;
 }
 export interface Harness {
     session: AgentSession;

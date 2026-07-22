@@ -54,7 +54,9 @@ export async function createHarness(options = {}) {
     const toolMap = options.tools ? Object.fromEntries(options.tools.map((tool) => [tool.name, tool])) : undefined;
     const withConfiguredAuth = options.withConfiguredAuth ?? true;
     const extensionRunnerRef = {};
-    const sessionManager = SessionManager.inMemory();
+    //Viraj's Code Start
+    const sessionManager = options.sessionManager ?? SessionManager.inMemory();
+    //Viraj's Code End
     const settingsManager = SettingsManager.inMemory(options.settings);
     const authStorage = AuthStorage.inMemory();
     if (withConfiguredAuth) {

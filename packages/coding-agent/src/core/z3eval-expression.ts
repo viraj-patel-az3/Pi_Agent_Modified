@@ -34,6 +34,9 @@ interface Token {
 
 export type FocusedExpressionNode =
 	| { type: "number"; value: number }
+	//Viraj's Code Start
+	| { type: "identifier"; name: string }
+	//Viraj's Code End
 	| { type: "unary"; operator: "+" | "-"; operand: FocusedExpressionNode }
 	| { type: "percent"; operand: FocusedExpressionNode }
 	| { type: "range"; start: FocusedExpressionNode; end: FocusedExpressionNode }
@@ -150,10 +153,9 @@ class Parser {
 		if (token.kind === "identifier") {
 			this._advance();
 			if (!this._match("leftParen")) {
-				return {
-					kind: "unsupported",
-					message: `Bare identifier "${token.text}" is outside the focused evaluator grammar`,
-				};
+				//Viraj's Code Start
+				return { kind: "parsed", node: { type: "identifier", name: token.text } };
+				//Viraj's Code End
 			}
 
 			const args: FocusedExpressionNode[] = [];
@@ -454,28 +456,45 @@ export function parseFocusedExpression(expression: string): FocusedExpressionNod
 	return parsed.node;
 }
 
-export function evaluateFocusedExpressionNode(node: FocusedExpressionNode): EvaluatedValue {
+//Viraj's Code Start
+export function evaluateFocusedExpressionNode(
+	node: FocusedExpressionNode,
+	variables: ReadonlyMap<string, unknown> = new Map(),
+): EvaluatedValue {
+	//Viraj's Code End
 	switch (node.type) {
 		case "number":
 			return node.value;
+		//Viraj's Code Start
+		case "identifier": {
+			if (!variables.has(node.name)) {
+				throw new FocusedExpressionUnsupportedError(`Unknown variable "${node.name}"`);
+			}
+			const value = variables.get(node.name);
+			if (typeof value === "number" || (Array.isArray(value) && value.every((item) => typeof item === "number"))) {
+				return value;
+			}
+			throw new FocusedExpressionUnsupportedError(`Variable "${node.name}" is not numeric`);
+		}
+		//Viraj's Code End
 		case "unary": {
-			const operand = expectScalarNumber(evaluateFocusedExpressionNode(node.operand), "Unary operand");
+			const operand = expectScalarNumber(evaluateFocusedExpressionNode(node.operand, variables), "Unary operand");
 			return node.operator === "-" ? -operand : operand;
 		}
 		case "percent": {
-			const operand = expectScalarNumber(evaluateFocusedExpressionNode(node.operand), "Percent operand");
+			const operand = expectScalarNumber(evaluateFocusedExpressionNode(node.operand, variables), "Percent operand");
 			return operand / 100;
 		}
 		case "range": {
-			const start = evaluateFocusedExpressionNode(node.start);
-			const end = evaluateFocusedExpressionNode(node.end);
+			const start = evaluateFocusedExpressionNode(node.start, variables);
+			const end = evaluateFocusedExpressionNode(node.end, variables);
 			if (isNumberMatrix(start) || isNumberMatrix(end)) {
 				throw new FocusedExpressionSyntaxError("Range endpoints cannot be matrix values");
 			}
 			return evaluateRange(start, end);
 		}
 		case "call": {
-			const args = node.args.map((arg) => evaluateFocusedExpressionNode(arg));
+			const args = node.args.map((arg) => evaluateFocusedExpressionNode(arg, variables));
 			const upperName = node.name.toUpperCase();
 			if (upperName === "SIN") {
 				if (args.some((arg) => isNumberMatrix(arg))) {
@@ -496,9 +515,14 @@ export function evaluateFocusedExpressionNode(node: FocusedExpressionNode): Eval
 
 export function tryEvaluateFocusedExpression(
 	expression: string,
+	//Viraj's Code Start
+	variables: ReadonlyMap<string, unknown> = new Map(),
+	//Viraj's Code End
 ): { kind: "unsupported" } | { kind: "value"; value: EvaluatedValue } {
 	try {
-		return { kind: "value", value: evaluateFocusedExpressionNode(parseFocusedExpression(expression)) };
+		//Viraj's Code Start
+		return { kind: "value", value: evaluateFocusedExpressionNode(parseFocusedExpression(expression), variables) };
+		//Viraj's Code End
 	} catch (error) {
 		if (error instanceof FocusedExpressionUnsupportedError) {
 			if (hasFocusedSyntaxHint(expression)) {

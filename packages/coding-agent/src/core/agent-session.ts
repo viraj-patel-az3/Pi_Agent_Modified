@@ -14,7 +14,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+//Viraj's Code Start
+import { basename, dirname, join } from "node:path";
+//Viraj's Code End
 import type {
 	Agent,
 	AgentEvent,
@@ -85,13 +87,29 @@ import {
 	parseLocalEvalFileBlock,
 	splitLocalEvalFileBlocks,
 } from "./local-eval-file-blocks.ts";
-//Viraj's Code end
+//Viraj's Code End
+//Viraj's Code Start
+import {
+	isValidLocalVariableName,
+	type JsonSafeValue,
+	LocalStateStore,
+	type PersistedLocalState,
+	parseLocalVariableAssignment,
+	referencesLocalVariable,
+	toJsonSafeValue,
+} from "./local-state.ts";
+//Viraj's Code End
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
+//Viraj's Code Start
+import { NamedLocalStateStore } from "./named-local-state-store.ts";
+//Viraj's Code End
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
+//Viraj's Code Start
+import type { BranchSummaryEntry, CompactionEntry, LocalStateEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+//Viraj's Code End
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -315,25 +333,186 @@ export class AgentSession {
 	}
 
 	private _resolveJavaScriptLocally(expression: string): unknown {
-		return Function(`"use strict"; return (${expression});`)();
+		//Viraj's Code Start
+		const bindings = this._localState.entries();
+		return Function(
+			...bindings.map(([name]) => name),
+			`"use strict"; return (${expression});`,
+		)(...bindings.map(([_name, value]) => value));
+		//Viraj's Code End
 	}
 
 	public _resolveLocally(expression: string): unknown {
-		const focusedResult = tryEvaluateFocusedExpression(expression);
+		//Viraj's Code Start
+		return this._resolveLocalExpression("z3", expression);
+		//Viraj's Code End
+	}
+
+	//Viraj's Code Start
+	private _resolveLocalExpression(fileType: LocalEvalFileType, expression: string): unknown {
+		const assignment = parseLocalVariableAssignment(expression);
+		if (assignment) {
+			const value = this._evaluateLocalExpression(fileType, assignment.expression);
+			if (this._localState.isPersistent(assignment.name)) {
+				const serialized = toJsonSafeValue(value, assignment.name);
+				this._localState.set(assignment.name, value);
+				this._appendPersistedLocalState(new Map([[assignment.name, serialized]]));
+				return value;
+			}
+			this._localState.set(assignment.name, value);
+			return value;
+		}
+		return this._evaluateLocalExpression(fileType, expression);
+	}
+
+	private _evaluateLocalExpression(fileType: LocalEvalFileType, expression: string): unknown {
+		if (fileType === "js") {
+			return this._resolveJavaScriptLocally(expression);
+		}
+		const focusedResult = tryEvaluateFocusedExpression(expression, new Map(this._localState.entries()));
 		if (focusedResult.kind === "value") {
 			return focusedResult.value;
 		}
 		return this._resolveJavaScriptLocally(expression);
 	}
 
+	private _appendPersistedLocalState(overrides?: ReadonlyMap<string, JsonSafeValue>): void {
+		this.sessionManager.appendLocalState(this._localState.createPersistedState(overrides));
+	}
+
+	private _formatPersistedVariables(): string {
+		const entries = this._localState.entries().filter(([name]) => this._localState.isPersistent(name));
+		if (entries.length === 0) {
+			return "Persisted variables:\n- (none)";
+		}
+		return `Persisted variables:\n${entries
+			.map(([name, value]) => `- ${name} = ${JSON.stringify(toJsonSafeValue(value, name))}`)
+			.join("\n")}`;
+	}
+
+	private _handlePersistenceCommand(command: string): string | undefined {
+		const persistMatch = command.match(/^\/persist(?:\s+(.*))?$/);
+		if (persistMatch) {
+			const argument = persistMatch[1]?.trim();
+			if (argument === "session" || argument?.startsWith("session ")) {
+				const suppliedName = argument.slice("session".length).trim() || undefined;
+				const result = this._namedLocalStateStore.save(
+					suppliedName,
+					this._localState.createPersistedState(),
+					this.sessionManager.getSessionId(),
+				);
+				const action = result.created ? "Created" : "Updated";
+				return `${action} saved local-state session:\n- ${result.snapshot.name}\n\nPersisted variables:\n${result.snapshot.persistentNames.map((name) => `- ${name}`).join("\n")}\n\nRestore it using:\n/restoresession ${result.snapshot.name}`;
+			}
+			if (!argument || argument === "list") {
+				return this._formatPersistedVariables();
+			}
+			if (argument === "clear") {
+				this._localState.clearPersistence();
+				this._appendPersistedLocalState();
+				return "Cleared persisted variables. Current in-memory variables remain available.";
+			}
+
+			const names = [...new Set(argument.split(/\s+/))];
+			for (const name of names) {
+				if (!isValidLocalVariableName(name)) {
+					throw new Error(`Invalid variable name "${name}".`);
+				}
+				if (!this._localState.has(name)) {
+					throw new Error(`Unknown local variable "${name}".`);
+				}
+			}
+
+			const candidateNames = new Set(
+				this._localState
+					.entries()
+					.filter(([name]) => this._localState.isPersistent(name))
+					.map(([name]) => name),
+			);
+			for (const name of names) {
+				candidateNames.add(name);
+			}
+			const serialized = new Map<string, JsonSafeValue>();
+			for (const name of candidateNames) {
+				serialized.set(name, toJsonSafeValue(this._localState.get(name), name));
+			}
+
+			this._localState.markPersistent(names);
+			this._appendPersistedLocalState(serialized);
+			return `Persisted variables:\n${names.map((name) => `- ${name}`).join("\n")}`;
+		}
+
+		const unpersistMatch = command.match(/^\/unpersist(?:\s+(.*))?$/);
+		if (!unpersistMatch) {
+			return undefined;
+		}
+		const argument = unpersistMatch[1]?.trim();
+		if (!argument) {
+			throw new Error("Usage: /unpersist <variable> [variable ...]");
+		}
+		const names = [...new Set(argument.split(/\s+/))];
+		for (const name of names) {
+			if (!isValidLocalVariableName(name)) {
+				throw new Error(`Invalid variable name "${name}".`);
+			}
+		}
+		this._localState.unmarkPersistent(names);
+		this._appendPersistedLocalState();
+		return `Stopped persisting variables:\n${names.map((name) => `- ${name}`).join("\n")}`;
+	}
+
+	private _handleNamedLocalStateCommand(command: string): string | undefined {
+		const restoreMatch = command.match(/^\/restoresession(?:\s+(.*))?$/);
+		if (restoreMatch) {
+			const argument = restoreMatch[1];
+			if (argument === undefined || argument.trim() === "" || argument.trim() === "list") {
+				const snapshots = this._namedLocalStateStore.list();
+				if (snapshots.length === 0) {
+					return "Saved local-state sessions:\n- (none)";
+				}
+				return `Saved local-state sessions:\n${snapshots
+					.map(
+						(snapshot) =>
+							`- ${snapshot.name} (${snapshot.variableCount} variable${snapshot.variableCount === 1 ? "" : "s"}, updated ${new Date(snapshot.updatedAt).toISOString()})`,
+					)
+					.join("\n")}`;
+			}
+			const name = argument;
+			const snapshot = this._namedLocalStateStore.get(name);
+			if (!snapshot) {
+				return `No saved local-state session named "${name}" was found.`;
+			}
+			const candidate = this._localState.clone();
+			candidate.mergePersistedState({
+				version: 1,
+				variables: snapshot.variables,
+				persistentNames: snapshot.persistentNames,
+			});
+			this.sessionManager.appendLocalState(candidate.createPersistedState());
+			this._localState.replaceWith(candidate);
+			return `Restored saved local-state session:\n- ${snapshot.name}\n\nRestored variables:\n${snapshot.persistentNames.map((variableName) => `- ${variableName}`).join("\n")}`;
+		}
+
+		const deleteMatch = command.match(/^\/deletesession(?:\s+(.*))?$/);
+		if (!deleteMatch) {
+			return undefined;
+		}
+		const name = deleteMatch[1];
+		if (name === undefined || name.trim() === "") {
+			throw new Error("Usage: /deletesession <name>");
+		}
+		if (!this._namedLocalStateStore.delete(name)) {
+			return `No saved local-state session named "${name}" was found.`;
+		}
+		return `Deleted saved local-state session:\n- ${name}`;
+	}
+	//Viraj's Code End
+
 	//Viraj's Code Start
 	public _resolveLocalEvalFileExpression(fileType: LocalEvalFileType, expression: string): unknown {
-		if (fileType === "js") {
-			return this._resolveJavaScriptLocally(expression);
-		}
-		return this._resolveLocally(expression);
+		return this._resolveLocalExpression(fileType, expression);
 	}
-	//Viraj's Code end
+	//Viraj's Code End
 
 	private _shouldSurfaceInlineLocalEvalError(error: unknown): boolean {
 		return error instanceof FocusedExpressionSyntaxError || error instanceof SyntaxError;
@@ -355,7 +534,7 @@ export class AgentSession {
 		//Viraj's Code Start
 		match = pattern.exec(text);
 		while (match !== null) {
-			//Viraj's Code end
+			//Viraj's Code End
 			hadInterpolation = true;
 			interpolatedText += text.slice(cursor, match.index);
 			cursor = match.index + match[0].length;
@@ -385,7 +564,7 @@ export class AgentSession {
 
 			//Viraj's Code Start
 			match = pattern.exec(text);
-			//Viraj's Code end
+			//Viraj's Code End
 		}
 
 		if (!hadInterpolation) {
@@ -428,6 +607,10 @@ export class AgentSession {
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
+	//Viraj's Code Start
+	private readonly _localState: LocalStateStore;
+	private readonly _namedLocalStateStore: NamedLocalStateStore;
+	//Viraj's Code End
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -442,6 +625,16 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
+		//Viraj's Code Start
+		const persistedStateEntry = [...this.sessionManager.getBranch()]
+			.reverse()
+			.find((entry): entry is LocalStateEntry<PersistedLocalState> => entry.type === "local_state");
+		this._localState = new LocalStateStore(persistedStateEntry?.state);
+		const sessionDirectory = this.sessionManager.getSessionDir();
+		this._namedLocalStateStore = new NamedLocalStateStore(
+			sessionDirectory ? join(sessionDirectory, "named-local-state") : "",
+		);
+		//Viraj's Code End
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
@@ -1450,6 +1643,49 @@ export class AgentSession {
 		}
 
 		const trimmedText = text.trimStart();
+		//Viraj's Code Start
+		if (
+			trimmedText.startsWith("/persist") ||
+			trimmedText.startsWith("/unpersist") ||
+			trimmedText.startsWith("/restoresession") ||
+			trimmedText.startsWith("/deletesession")
+		) {
+			try {
+				const result =
+					this._handlePersistenceCommand(trimmedText) ?? this._handleNamedLocalStateCommand(trimmedText);
+				if (result !== undefined) {
+					await emitIntercept(`${result}\n`);
+					options?.preflightResult?.(true);
+					return;
+				}
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await emitIntercept(`Error: ${message}\n`);
+				options?.preflightResult?.(true);
+				return;
+			}
+		}
+
+		const localVariableNames = new Set(this._localState.entries().map(([name]) => name));
+		const isLocalStateExpression =
+			parseLocalVariableAssignment(trimmedText) !== undefined ||
+			referencesLocalVariable(trimmedText, localVariableNames);
+		if (isLocalStateExpression) {
+			try {
+				const value = this._resolveLocally(trimmedText);
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: trimmedText, result: this._formatResult(value) },
+				]);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [
+					{ query: trimmedText, result: `Error: ${message}` },
+				]);
+			}
+			options?.preflightResult?.(true);
+			return;
+		}
+		//Viraj's Code End
 		// /z-mode slash commands
 		if (trimmedText === "/z-mode=on") {
 			this._z3evalMode = true;
@@ -1565,7 +1801,7 @@ export class AgentSession {
 			options?.preflightResult?.(true);
 			return;
 		}
-		//Viraj's Code end
+		//Viraj's Code End
 
 		// z3eval mode ON → evaluate any input as a zblack expression (no "=" needed)
 		if (this._z3evalMode && !hadInterpolation) {

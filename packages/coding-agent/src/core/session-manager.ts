@@ -1,6 +1,8 @@
 import { type AgentMessage, uuidv7 } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
+//Viraj's Code Start
+//Viraj's Code End
 import {
 	appendFileSync,
 	closeSync,
@@ -10,6 +12,8 @@ import {
 	openSync,
 	readdirSync,
 	readSync,
+	renameSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "fs";
@@ -116,6 +120,13 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+//Viraj's Code Start
+export interface LocalStateEntry<T = unknown> extends SessionEntryBase {
+	type: "local_state";
+	state: T;
+}
+//Viraj's Code End
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -146,7 +157,10 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	//Viraj's Code Start
+	| LocalStateEntry;
+//Viraj's Code End
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -915,6 +929,14 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+		//Viraj's Code Start
+		const requiresImmediatePersistence = entry.type === "local_state";
+		if (requiresImmediatePersistence && !this.flushed) {
+			this._rewriteFile();
+			this.flushed = true;
+			return;
+		}
+		//Viraj's Code End
 		if (!hasAssistant) {
 			if (this.flushed) {
 				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
@@ -1028,6 +1050,45 @@ export class SessionManager {
 		this._appendEntry(entry);
 		return entry.id;
 	}
+
+	//Viraj's Code Start
+	appendLocalState<T>(state: T): string {
+		const entry: LocalStateEntry<T> = {
+			type: "local_state",
+			state,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		if (!this.persist || !this.sessionFile) {
+			this._appendEntry(entry);
+			return entry.id;
+		}
+
+		const temporaryPath = `${this.sessionFile}.${randomUUID()}.tmp`;
+		try {
+			const candidateEntries = [...this.fileEntries, entry];
+			writeFileSync(
+				temporaryPath,
+				`${candidateEntries.map((candidate) => JSON.stringify(candidate)).join("\n")}\n`,
+				{
+					flag: "wx",
+				},
+			);
+			renameSync(temporaryPath, this.sessionFile);
+			this.fileEntries.push(entry);
+			this.byId.set(entry.id, entry);
+			this.leafId = entry.id;
+			this.flushed = true;
+		} catch (error) {
+			if (existsSync(temporaryPath)) {
+				rmSync(temporaryPath);
+			}
+			throw error;
+		}
+		return entry.id;
+	}
+	//Viraj's Code End
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */
 	appendSessionInfo(name: string): string {
