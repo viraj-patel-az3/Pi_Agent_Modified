@@ -6,6 +6,9 @@ import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
+// Viraj's code start
+import { LocalEvalTableComponent, type LocalEvalTableValue } from "./local-eval-table.ts";
+// Viraj's code end
 import { UserMessageComponent } from "./user-message.ts";
 
 //Viraj's code end
@@ -14,6 +17,10 @@ import { UserMessageComponent } from "./user-message.ts";
 interface LocalEvalEntry {
 	query: string;
 	result: string;
+	// Viraj's code start
+	renderMode?: "references" | "tables";
+	tableValue?: LocalEvalTableValue;
+	// Viraj's code end
 }
 
 interface LocalEvalMessageDetails {
@@ -100,6 +107,14 @@ export class CustomMessageComponent extends Container {
 			timestamp: this.message.timestamp,
 		};
 	}
+
+	// Viraj's code start
+	private _isTableValue(value: unknown): value is LocalEvalTableValue {
+		if (value === null || typeof value !== "object" || !("kind" in value)) return false;
+		const kind = (value as { kind: unknown }).kind;
+		return kind === "scalar" || kind === "marker" || kind === "array" || kind === "object";
+	}
+	// Viraj's code end
 	//Viraj's code end
 
 	private rebuild(): void {
@@ -135,13 +150,19 @@ export class CustomMessageComponent extends Container {
 					localEvalContainer.addChild(new Spacer(1));
 				}
 				localEvalContainer.addChild(new UserMessageComponent(entry.query, this.markdownTheme));
-				localEvalContainer.addChild(
-					new AssistantMessageComponent(
-						this._createLocalEvalAssistantMessage(entry.result),
-						false,
-						this.markdownTheme,
-					),
-				);
+				// Viraj's code start
+				if (entry.renderMode === "tables" && this._isTableValue(entry.tableValue)) {
+					localEvalContainer.addChild(new LocalEvalTableComponent(entry.tableValue));
+				} else {
+					localEvalContainer.addChild(
+						new AssistantMessageComponent(
+							this._createLocalEvalAssistantMessage(entry.result),
+							false,
+							this.markdownTheme,
+						),
+					);
+				}
+				// Viraj's code end
 			}
 			this.customComponent = localEvalContainer;
 			this.addChild(localEvalContainer);

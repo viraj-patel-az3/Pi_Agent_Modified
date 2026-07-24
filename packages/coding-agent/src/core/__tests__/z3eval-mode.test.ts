@@ -141,10 +141,11 @@ describe("AgentSession z3eval mode", () => {
 		const lastContent = getMessageText(harness.session.messages[harness.session.messages.length - 1]);
 		//Viraj's code start
 		expect(lastContent).toContain("[1,2,3].map(x=>x*x)\n");
-		expect(lastContent).toContain("| Index | Value |");
-		expect(lastContent).toContain("| 0 | 1 |");
-		expect(lastContent).toContain("| 1 | 4 |");
-		expect(lastContent).toContain("| 2 | 9 |");
+		// Viraj's code start
+		expect(lastContent).toContain("- 1\n- 4\n- 9");
+		expect(lastContent).not.toContain("Index");
+		expect(lastContent).not.toContain("Value");
+		// Viraj's code end
 		//Viraj's code end
 	});
 
@@ -321,7 +322,7 @@ describe("AgentSession z3eval mode", () => {
 		expect(lastMessage.details?.entries?.[0]?.result).toContain("| b | 2 |");
 	});
 
-	it("20. one-shot local eval renders matrices with a leading row column", async () => {
+	it("20. one-shot local eval renders matrices without generated headings", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
@@ -334,12 +335,14 @@ describe("AgentSession z3eval mode", () => {
 			details?: { entries?: Array<{ query: string; result: string }> };
 		};
 		expect(lastMessage.customType).toBe("local-eval");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 | Column 2 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | 1 | 2 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 1 | 3 | 4 |");
+		// Viraj's code start
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- 1 | 2\n- 3 | 4");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Row");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Column 1");
+		// Viraj's code end
 	});
 
-	it("21. one-shot local eval renders single-column matrices with row indexes", async () => {
+	it("21. one-shot local eval renders single-column matrices without row indexes", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
@@ -352,9 +355,10 @@ describe("AgentSession z3eval mode", () => {
 			details?: { entries?: Array<{ query: string; result: string }> };
 		};
 		expect(lastMessage.customType).toBe("local-eval");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | -1479.5 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 1 | -1399.66 |");
+		// Viraj's code start
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- -1479.5\n- -1399.66");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Row");
+		// Viraj's code end
 	});
 
 	it("22. one-shot local eval renders ragged arrays as nested tables without matrix formatting", async () => {
@@ -392,9 +396,11 @@ describe("AgentSession z3eval mode", () => {
 		};
 		expect(lastMessage.customType).toBe("local-eval");
 		expect(lastMessage.details?.entries?.[0]?.query).toBe("SIN(1..10)");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Index | Value |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 9 |");
+		// Viraj's code start
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- 0");
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- 0.4121184852417566");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Index");
+		// Viraj's code end
 		expect(getMessageText(lastMessage)).not.toContain("[object Promise]");
 	});
 
@@ -415,7 +421,7 @@ describe("AgentSession z3eval mode", () => {
 		expect(payment).toBeCloseTo(-1479.5035898410138, 12);
 	});
 
-	it("25. vectorized PMT results render with the existing single-column matrix table", async () => {
+	it("25. vectorized PMT results render without generated matrix headings", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
@@ -428,9 +434,10 @@ describe("AgentSession z3eval mode", () => {
 			details?: { entries?: Array<{ query: string; result: string }> };
 		};
 		expect(lastMessage.customType).toBe("local-eval");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Row | Column 1 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | -1479.5035898410138 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 10 |");
+		// Viraj's code start
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- -1479.5035898410138");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Row");
+		// Viraj's code end
 	});
 
 	it("26. focused evaluator validation errors stay local and preserve continuous mode", async () => {
@@ -472,9 +479,10 @@ describe("AgentSession z3eval mode", () => {
 		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
 			details?: { entries?: Array<{ result: string }> };
 		};
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| Index | Value |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 0 | 10 |");
-		expect(lastMessage.details?.entries?.[0]?.result).toContain("| 2 | 30 |");
+		// Viraj's code start
+		expect(lastMessage.details?.entries?.[0]?.result).toContain("- 10\n- 20\n- 30");
+		expect(lastMessage.details?.entries?.[0]?.result).not.toContain("Index");
+		// Viraj's code end
 	});
 
 	it("29. .z3 execution uses the shared evaluator for focused syntax", async () => {
@@ -489,7 +497,10 @@ describe("AgentSession z3eval mode", () => {
 
 		const allMessages = harness.session.messages.map((message) => getMessageText(message)).join("\n");
 		expect(allMessages).toContain("SIN(1..3)");
-		expect(allMessages).toContain("| Index | Value |");
+		// Viraj's code start
+		expect(allMessages).toContain("- 0.8414709848078965");
+		expect(allMessages).not.toContain("Index | Value");
+		// Viraj's code end
 		expect(allMessages).toContain("PMT(10%,10,10000,0,1)");
 		expect(allMessages).toContain("-1479.5035898410138");
 
@@ -565,7 +576,9 @@ describe("AgentSession z3eval mode", () => {
 		harnesses.push(harness);
 		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
 
-		await harness.session.prompt("= (() => { const circularArray = ['root']; circularArray.push(circularArray); return circularArray; })()");
+		await harness.session.prompt(
+			"= (() => { const circularArray = ['root']; circularArray.push(circularArray); return circularArray; })()",
+		);
 
 		expect(promptSpy).not.toHaveBeenCalled();
 		const lastMessage = harness.session.messages[harness.session.messages.length - 1] as {
@@ -665,7 +678,7 @@ describe("AgentSession z3eval mode", () => {
 
 		await harness.session.prompt("Value: {=0}");
 		await harness.session.prompt("Flag: {=false}");
-		await harness.session.prompt("Blank:{=\"\"}");
+		await harness.session.prompt('Blank:{=""}');
 		await harness.session.prompt("Null:{=null}");
 		await harness.session.prompt("Undefined:{=undefined}");
 
@@ -827,8 +840,10 @@ describe("AgentSession z3eval mode", () => {
 		) as Array<{ details?: { entries?: Array<{ query: string; result: string }> } }>;
 		const result = localEvalMessages[0].details?.entries?.[0]?.result ?? "";
 		expect(localEvalMessages[0].details?.entries?.[0]?.query).toBe("1..3");
-		expect(result).toContain("| Index | Value |");
-		expect(result).toContain("| 2 | 3 |");
+		// Viraj's code start
+		expect(result).toContain("- 1\n- 2\n- 3");
+		expect(result).not.toContain("Index");
+		// Viraj's code end
 
 		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
 	});
@@ -931,6 +946,140 @@ prompt = {
 
 		if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
 	});
+
+	// Viraj's code start
+	it("47. /zoutput changes output mode locally without invoking the provider", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSpy = vi.spyOn(harness.session.agent, "prompt");
+		await harness.session.prompt("/zoutput tables");
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect(harness.session.localEvalRenderMode).toBe("tables");
+		expect(getMessageText(harness.session.messages.at(-1))).toContain("Z3EVAL output mode: tables");
+	});
+
+	it("48. /zoutput reports, restores, and rejects modes locally", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		expect(harness.session.localEvalRenderMode).toBe("references");
+		await harness.session.prompt("/zoutput");
+		expect(getMessageText(harness.session.messages.at(-1))).toContain("Z3EVAL output mode: references");
+		await harness.session.prompt("/zoutput tables");
+		await harness.session.prompt("/zoutput json");
+		expect(harness.session.localEvalRenderMode).toBe("tables");
+		expect(getMessageText(harness.session.messages.at(-1))).toContain("Unknown Z3EVAL output mode: json");
+		await harness.session.prompt("/zoutput references");
+		expect(harness.session.localEvalRenderMode).toBe("references");
+	});
+
+	it("49. selected mode applies to later local expressions and suffix strings remain ordinary values", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt("/zoutput tables");
+		await harness.session.prompt("= [{ item: { state: 'ok' } }]");
+		let entry = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ renderMode?: string }> } }).details
+			?.entries?.[0];
+		expect(entry?.renderMode).toBe("tables");
+		await harness.session.prompt('= { message: "Use --tables" }');
+		const result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details?.entries?.[0]
+			?.result;
+		expect(result).toContain("Use --tables");
+	});
+
+	it("50. continuous Z3 mode uses the selected output mode", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt("/zoutput tables");
+		await harness.session.prompt("/z-mode=on");
+		await harness.session.prompt("[1, 2]");
+		const entry = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ renderMode?: string }> } }).details
+			?.entries?.[0];
+		expect(entry?.renderMode).toBe("tables");
+	});
+
+	// Viraj's code start
+	it("51. renders scalar vectors without generated headings", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (const expression of ['[1, 2, 3]', '["a", "b", "c"]', '[1, "two", true, null]']) {
+			await harness.session.prompt(`= ${expression}`);
+			const result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details
+				?.entries?.[0]?.result;
+			expect(result).not.toContain("Index");
+			expect(result).not.toContain("Value");
+		}
+	});
+
+	it("52. uses explicit array headers without dropping data rows", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt(
+			'= (() => { const data = [["row-a", 31], ["row-b", 28]]; data.header = ["Name", "Age"]; return data; })()',
+		);
+		const result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details
+			?.entries?.[0]?.result;
+		expect(result).toContain("| Name | Age |");
+		expect(result).toContain("| row-a | 31 |");
+		expect(result).toContain("| row-b | 28 |");
+		expect(result).not.toContain("Index");
+		expect(result).not.toContain("Column 1");
+	});
+
+	it("53. uses explicit object-array headers in the supplied order", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt(
+			'= (() => { const data = [{ name: "row-a", age: 31 }, { name: "row-b", age: 28 }]; data.header = ["age", "name"]; return data; })()',
+		);
+		const result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details
+			?.entries?.[0]?.result;
+		expect(result).toContain("| age | name |");
+		expect(result).toContain("| 31 | row-a |");
+		expect(result).not.toContain("Index");
+	});
+
+	it("54. promotes only io-marked first rows to headings", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt('= [["Name", "Age"], ["row-a", 31], ["row-b", 28]].io()');
+		const result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details
+			?.entries?.[0]?.result;
+		expect(result).toContain("| Name | Age |");
+		expect(result).toContain("| row-a | 31 |");
+		expect(result).toContain("| row-b | 28 |");
+		expect(result).not.toContain("| Name | Age |\n| --- | --- |\n| Name | Age |");
+		expect(result).not.toContain("Index");
+	});
+
+	it("55. handles empty and invalid array header metadata safely", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt('= (() => { const data = []; data.header = ["Name", "Age"]; return data; })()');
+		let result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details?.entries?.[0]
+			?.result;
+		expect(result).toContain("| Name | Age |");
+		await harness.session.prompt('= (() => { const data = [1, 2]; data.header = "Name"; return data; })()');
+		result = (harness.session.messages.at(-1) as { details?: { entries?: Array<{ result: string }> } }).details?.entries?.[0]?.result;
+		expect(result).toContain("- 1\n- 2");
+		expect(result).not.toContain("Index");
+	});
+
+	it("56. preserves array presentation for framed table output", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt("/zoutput tables");
+		await harness.session.prompt('= [["Name", "Age"], ["row-a", 31]].io()');
+		const tableValue = (
+			harness.session.messages.at(-1) as {
+					details?: { entries?: Array<{ renderMode?: string; tableValue?: { kind?: string; headers?: Array<{ value?: string }> } }> };
+				}
+			).details?.entries?.[0];
+		expect(tableValue?.renderMode).toBe("tables");
+		expect(tableValue?.tableValue?.kind).toBe("table");
+		expect(tableValue?.tableValue?.headers?.map((header) => header.value)).toEqual(["Name", "Age"]);
+	});
+	// Viraj's code end
+	// Viraj's code end
 	//Viraj's Code end
 	//Viraj's code end
 	//Viraj's code end

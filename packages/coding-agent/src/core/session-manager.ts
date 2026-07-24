@@ -1088,6 +1088,18 @@ export class SessionManager {
 		}
 		return entry.id;
 	}
+
+	/**
+	 * Force the session file onto disk reflecting the current entries, without appending a new entry.
+	 * Durable local-state is now persisted externally (SQLite); this preserves the invariant that
+	 * persisting durable state makes the session resumable via SessionManager.open() on disk.
+	 */
+	ensureFlushed(): void {
+		if (this.persist && this.sessionFile && !this.flushed) {
+			this._rewriteFile();
+			this.flushed = true;
+		}
+	}
 	//Viraj's Code End
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

@@ -15,7 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 //Viraj's Code Start
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 //Viraj's Code End
 import type {
 	Agent,
@@ -35,6 +35,8 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai";
+// Viraj's code start
+import type { LocalEvalTableValue } from "../modes/interactive/components/local-eval-table.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -102,7 +104,7 @@ import {
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 //Viraj's Code Start
-import { NamedLocalStateStore } from "./named-local-state-store.ts";
+import type { NamedLocalStateSnapshotSummary } from "./named-local-state-store.ts";
 //Viraj's Code End
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -113,12 +115,14 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import { SQLiteLocalStateStore } from "./sqlite-local-state-store.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 //Viraj's code start
 import { FocusedExpressionSyntaxError, tryEvaluateFocusedExpression } from "./z3eval-expression.ts";
+// Viraj's code end
 //Viraj's code end
 
 // ============================================================================
@@ -273,7 +277,27 @@ interface ToolDefinitionEntry {
 interface LocalEvalEntry {
 	query: string;
 	result: string;
+	// Viraj's code start
+	renderMode?: LocalEvalRenderMode;
+	tableValue?: LocalEvalTableValue;
+	// Viraj's code end
 }
+// Viraj's code start
+type LocalEvalRenderMode = "references" | "tables";
+// Viraj's code end
+
+// Viraj's code start
+const LOCAL_EVAL_ARRAY_PRESENTATION = Symbol("local-eval-array-presentation");
+
+type LocalEvalArrayPresentation =
+	| { kind: "vector"; values: unknown[] }
+	| { kind: "table"; headers: unknown[]; rows: unknown[][] }
+	| { kind: "object-table"; headers: string[]; rows: unknown[][] }
+	| { kind: "matrix"; rows: unknown[][] }
+	| { kind: "nested"; values: unknown[] };
+
+type LocalEvalArrayMetadata = { firstRowIsHeader: true };
+// Viraj's code end
 
 interface LocalEvalMessageDetails {
 	entries: LocalEvalEntry[];
@@ -323,6 +347,7 @@ export class AgentSession {
 
 	//Viraj's code start
 	private _z3evalMode = false;
+	private _localEvalRenderMode: LocalEvalRenderMode = "references";
 
 	public setZ3evalMode(enabled: boolean): void {
 		this._z3evalMode = enabled;
@@ -332,14 +357,29 @@ export class AgentSession {
 		return this._z3evalMode;
 	}
 
+	public get localEvalRenderMode(): LocalEvalRenderMode {
+		return this._localEvalRenderMode;
+	}
+
 	private _resolveJavaScriptLocally(expression: string): unknown {
-		//Viraj's Code Start
+		// Viraj's code start
 		const bindings = this._localState.entries();
+		const ioMatch = expression.match(/^([\s\S]*)\.io\(\)\s*$/);
+		const io = (value: unknown): unknown => {
+			if (!Array.isArray(value)) {
+				throw new TypeError(".io() can only be called on arrays");
+			}
+			Object.defineProperty(value, LOCAL_EVAL_ARRAY_PRESENTATION, {
+				value: { firstRowIsHeader: true } satisfies LocalEvalArrayMetadata,
+			});
+			return value;
+		};
 		return Function(
 			...bindings.map(([name]) => name),
-			`"use strict"; return (${expression});`,
-		)(...bindings.map(([_name, value]) => value));
-		//Viraj's Code End
+			"io",
+			`"use strict"; return (${ioMatch ? `io(${ioMatch[1]})` : expression});`,
+		)(...bindings.map(([_name, value]) => value), io);
+		// Viraj's code end
 	}
 
 	public _resolveLocally(expression: string): unknown {
@@ -377,7 +417,13 @@ export class AgentSession {
 	}
 
 	private _appendPersistedLocalState(overrides?: ReadonlyMap<string, JsonSafeValue>): void {
-		this.sessionManager.appendLocalState(this._localState.createPersistedState(overrides));
+		const persisted = this._localState.createPersistedState(overrides);
+		if (this._sqliteStore) {
+			this._sqliteStore.saveSessionState(this.sessionManager.getSessionId(), persisted);
+			this.sessionManager.ensureFlushed();
+			return;
+		}
+		this.sessionManager.appendLocalState(persisted);
 	}
 
 	private _formatPersistedVariables(): string {
@@ -395,8 +441,11 @@ export class AgentSession {
 		if (persistMatch) {
 			const argument = persistMatch[1]?.trim();
 			if (argument === "session" || argument?.startsWith("session ")) {
+				if (!this._sqliteStore) {
+					throw new Error("Named local-state sessions require durable session storage.");
+				}
 				const suppliedName = argument.slice("session".length).trim() || undefined;
-				const result = this._namedLocalStateStore.save(
+				const result = this._sqliteStore.saveNamedCheckpoint(
 					suppliedName,
 					this._localState.createPersistedState(),
 					this.sessionManager.getSessionId(),
@@ -465,20 +514,23 @@ export class AgentSession {
 		const restoreMatch = command.match(/^\/restoresession(?:\s+(.*))?$/);
 		if (restoreMatch) {
 			const argument = restoreMatch[1];
+			if (!this._sqliteStore) {
+				throw new Error("Named local-state sessions require durable session storage.");
+			}
 			if (argument === undefined || argument.trim() === "" || argument.trim() === "list") {
-				const snapshots = this._namedLocalStateStore.list();
+				const snapshots = this._sqliteStore.listNamedCheckpoints();
 				if (snapshots.length === 0) {
 					return "Saved local-state sessions:\n- (none)";
 				}
 				return `Saved local-state sessions:\n${snapshots
 					.map(
-						(snapshot) =>
+						(snapshot: NamedLocalStateSnapshotSummary) =>
 							`- ${snapshot.name} (${snapshot.variableCount} variable${snapshot.variableCount === 1 ? "" : "s"}, updated ${new Date(snapshot.updatedAt).toISOString()})`,
 					)
 					.join("\n")}`;
 			}
 			const name = argument;
-			const snapshot = this._namedLocalStateStore.get(name);
+			const snapshot = this._sqliteStore.getNamedCheckpoint(name);
 			if (!snapshot) {
 				return `No saved local-state session named "${name}" was found.`;
 			}
@@ -488,9 +540,9 @@ export class AgentSession {
 				variables: snapshot.variables,
 				persistentNames: snapshot.persistentNames,
 			});
-			this.sessionManager.appendLocalState(candidate.createPersistedState());
 			this._localState.replaceWith(candidate);
-			return `Restored saved local-state session:\n- ${snapshot.name}\n\nRestored variables:\n${snapshot.persistentNames.map((variableName) => `- ${variableName}`).join("\n")}`;
+			this._appendPersistedLocalState();
+			return `Restored saved local-state session:\n- ${snapshot.name}\n\nRestored variables:\n${snapshot.persistentNames.map((variableName: string) => `- ${variableName}`).join("\n")}`;
 		}
 
 		const deleteMatch = command.match(/^\/deletesession(?:\s+(.*))?$/);
@@ -501,7 +553,10 @@ export class AgentSession {
 		if (name === undefined || name.trim() === "") {
 			throw new Error("Usage: /deletesession <name>");
 		}
-		if (!this._namedLocalStateStore.delete(name)) {
+		if (!this._sqliteStore) {
+			throw new Error("Named local-state sessions require durable session storage.");
+		}
+		if (!this._sqliteStore.deleteNamedCheckpoint(name)) {
 			return `No saved local-state session named "${name}" was found.`;
 		}
 		return `Deleted saved local-state session:\n- ${name}`;
@@ -609,7 +664,7 @@ export class AgentSession {
 	private _modelRegistry: ModelRegistry;
 	//Viraj's Code Start
 	private readonly _localState: LocalStateStore;
-	private readonly _namedLocalStateStore: NamedLocalStateStore;
+	private readonly _sqliteStore: SQLiteLocalStateStore | undefined;
 	//Viraj's Code End
 
 	// Tool registry for extension getTools/setTools
@@ -626,14 +681,19 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		//Viraj's Code Start
-		const persistedStateEntry = [...this.sessionManager.getBranch()]
-			.reverse()
-			.find((entry): entry is LocalStateEntry<PersistedLocalState> => entry.type === "local_state");
-		this._localState = new LocalStateStore(persistedStateEntry?.state);
 		const sessionDirectory = this.sessionManager.getSessionDir();
-		this._namedLocalStateStore = new NamedLocalStateStore(
-			sessionDirectory ? join(sessionDirectory, "named-local-state") : "",
-		);
+		this._sqliteStore = sessionDirectory ? new SQLiteLocalStateStore(sessionDirectory) : undefined;
+		let persistedState = this._sqliteStore?.loadSessionState(this.sessionManager.getSessionId());
+		if (!persistedState) {
+			const persistedStateEntry = [...this.sessionManager.getBranch()]
+				.reverse()
+				.find((entry): entry is LocalStateEntry<PersistedLocalState> => entry.type === "local_state");
+			persistedState = persistedStateEntry?.state;
+			if (persistedState && this._sqliteStore) {
+				this._sqliteStore.saveSessionState(this.sessionManager.getSessionId(), persistedState);
+			}
+		}
+		this._localState = new LocalStateStore(persistedState);
 		//Viraj's Code End
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
@@ -1041,6 +1101,13 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
+		//Viraj's Code Start
+		try {
+			this._sqliteStore?.close();
+		} catch {
+			// Dispose must succeed even if closing the database fails.
+		}
+		//Viraj's Code End
 	}
 
 	// =========================================================================
@@ -1392,6 +1459,107 @@ export class AgentSession {
 		return undefined;
 	}
 
+	// Viraj's code start
+	private _getLocalEvalArrayPresentation(value: unknown[]): LocalEvalArrayPresentation {
+		const header = (value as unknown as { header?: unknown }).header;
+		const metadata = (value as unknown as { [LOCAL_EVAL_ARRAY_PRESENTATION]?: LocalEvalArrayMetadata })[
+			LOCAL_EVAL_ARRAY_PRESENTATION
+		];
+		const objectRows = value.every((item) => this._isSimpleObjectRow(item));
+		if (Array.isArray(header)) {
+			if (objectRows) {
+				const headers = header.map((cell) => this._stringifyLocalEvalValue(cell));
+				return {
+					kind: "object-table",
+					headers,
+					rows: (value as Record<string, unknown>[]).map((row) => headers.map((key) => row[key])),
+				};
+			}
+			return {
+				kind: "table",
+				headers: header,
+				rows: value.map((row) => (Array.isArray(row) ? row : [row])),
+			};
+		}
+		if (metadata?.firstRowIsHeader && Array.isArray(value[0])) {
+			return {
+				kind: "table",
+				headers: value[0],
+				rows: value.slice(1).map((row) => (Array.isArray(row) ? row : [row])),
+			};
+		}
+		if (this._isSimpleArray(value)) {
+			return { kind: "vector", values: value };
+		}
+		if (this._isSimpleObjectTable(value)) {
+			const rows = value as Record<string, unknown>[];
+			const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+			return { kind: "object-table", headers, rows: rows.map((row) => headers.map((header) => row[header])) };
+		}
+		if (this._isSimpleMatrix(value)) {
+			return { kind: "matrix", rows: value };
+		}
+		return { kind: "nested", values: value };
+	}
+	// Viraj's code end
+
+	// Viraj's code start
+	private _toLocalEvalTableValue(value: unknown, depth = 0, active = new WeakSet<object>()): LocalEvalTableValue {
+		if (!this._isRenderableContainer(value)) {
+			return { kind: "scalar", value: value == null ? "" : String(value) };
+		}
+		if (active.has(value)) return { kind: "marker", value: "[Circular Reference]" };
+		if (depth >= this._maxLocalEvalDisplayDepth) return { kind: "marker", value: "Maximum display depth reached" };
+		active.add(value);
+		const result: LocalEvalTableValue = Array.isArray(value)
+			? (() => {
+					const presentation = this._getLocalEvalArrayPresentation(value);
+					if (presentation.kind === "vector" || presentation.kind === "nested") {
+						return {
+							kind: "array",
+							presentation: presentation.kind,
+							items: presentation.values.map((item) => this._toLocalEvalTableValue(item, depth + 1, active)),
+						};
+					}
+					if (presentation.kind === "matrix") {
+						return {
+							kind: "matrix",
+							rows: presentation.rows.map((row) =>
+								row.map((cell) => this._toLocalEvalTableValue(cell, depth + 1, active)),
+							),
+						};
+					}
+					return {
+						kind: "table",
+						headers: presentation.headers.map((header) => this._toLocalEvalTableValue(header, depth + 1, active)),
+						rows: presentation.rows.map((row) =>
+							row.map((cell) => this._toLocalEvalTableValue(cell, depth + 1, active)),
+						),
+					};
+				})()
+			: {
+					kind: "object",
+					entries: Object.entries(value).map(([key, item]) => [
+						key,
+						this._toLocalEvalTableValue(item, depth + 1, active),
+					]),
+				};
+		active.delete(value);
+		return result;
+	}
+
+	private _createLocalEvalEntry(query: string, value: unknown): LocalEvalEntry {
+		return this._localEvalRenderMode === "tables"
+			? {
+					query,
+					result: this._formatResult(value),
+					renderMode: "tables",
+					tableValue: this._toLocalEvalTableValue(value),
+				}
+			: { query, result: this._formatResult(value) };
+	}
+	// Viraj's code end
+
 	private _formatMarkdownTable(headers: string[], rows: unknown[][]): string {
 		const headerLine = `| ${headers.map((header) => this._escapeMarkdownCell(header)).join(" | ")} |`;
 		const dividerLine = `| ${headers.map(() => "---").join(" | ")} |`;
@@ -1399,27 +1567,16 @@ export class AgentSession {
 		return [headerLine, dividerLine, ...dataLines].join("\n");
 	}
 
-	private _formatSimpleObjectTable(rows: Record<string, unknown>[]): string {
-		const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-		return this._formatMarkdownTable(
-			headers,
-			rows.map((row) => headers.map((header) => row[header])),
-		);
-	}
-
 	private _formatIndexedArray(values: unknown[]): string {
-		return this._formatMarkdownTable(
-			["Index", "Value"],
-			values.map((item, index) => [index, item]),
-		);
+		// Viraj's code start
+		return values.length === 0 ? "[]" : values.map((item) => `- ${this._escapeMarkdownCell(item)}`).join("\n");
+		// Viraj's code end
 	}
 
 	private _formatMatrix(value: unknown[][]): string {
-		const headers = ["Row", ...Array.from({ length: value[0].length }, (_item, index) => `Column ${index + 1}`)];
-		return this._formatMarkdownTable(
-			headers,
-			value.map((row, index) => [index, ...row]),
-		);
+		// Viraj's code start
+		return value.map((row) => `- ${row.map((cell) => this._escapeMarkdownCell(cell)).join(" | ")}`).join("\n");
+		// Viraj's code end
 	}
 
 	private _formatNestedArrayTable(value: unknown[], depth: number, seen: WeakSet<object>): string {
@@ -1494,31 +1651,37 @@ export class AgentSession {
 		seen: WeakSet<object>,
 	): string {
 		if (Array.isArray(value)) {
-			if (this._isSimpleObjectTable(value)) {
-				return this._formatSimpleObjectTable(value);
+			// Viraj's code start
+			const presentation = this._getLocalEvalArrayPresentation(value);
+			switch (presentation.kind) {
+				case "vector":
+					return this._formatIndexedArray(presentation.values);
+				case "table":
+				case "object-table":
+					return this._formatMarkdownTable(
+						presentation.headers.map((header) => this._stringifyLocalEvalValue(header)),
+						presentation.rows.map((row) => row.map((cell) => this._stringifyLocalEvalValue(cell))),
+					);
+				case "matrix":
+					return this._formatMatrix(presentation.rows);
+				case "nested":
+					return this._formatNestedArrayTable(presentation.values, depth, seen);
 			}
-			if (this._isSimpleArray(value)) {
-				return this._formatIndexedArray(value);
-			}
-			if (this._isSimpleMatrix(value)) {
-				return this._formatMatrix(value);
-			}
-			return this._formatNestedArrayTable(value, depth, seen);
+			// Viraj's code end
 		}
 
 		return this._formatNestedObjectTable(value, depth, seen);
 	}
 
 	private _formatResultSection(title: string, value: unknown): string | undefined {
-		if (this._isSimpleObjectTable(value)) {
-			return `${title}:\n${this._formatSimpleObjectTable(value)}`;
+		// Viraj's code start
+		if (Array.isArray(value)) {
+			const presentation = this._getLocalEvalArrayPresentation(value);
+			if (presentation.kind !== "nested") {
+				return `${title}:\n${this._formatNestedLocalEvalValue(value, 0, new WeakSet<object>())}`;
+			}
 		}
-		if (this._isSimpleArray(value)) {
-			return `${title}:\n${this._formatIndexedArray(value)}`;
-		}
-		if (this._isSimpleMatrix(value)) {
-			return `${title}:\n${this._formatMatrix(value)}`;
-		}
+		// Viraj's code end
 		return undefined;
 	}
 
@@ -1540,20 +1703,10 @@ export class AgentSession {
 	};
 
 	public _formatResult(value: unknown): string {
-		if (this._isSimpleObjectTable(value)) {
-			return this._formatSimpleObjectTable(value);
-		}
-
-		if (this._isSimpleArray(value)) {
-			return this._formatIndexedArray(value);
-		}
-
-		if (this._isSimpleMatrix(value)) {
-			return this._formatMatrix(value);
-		}
-
 		if (Array.isArray(value)) {
+			// Viraj's code start
 			return this._formatNestedLocalEvalValue(value, 0, new WeakSet<object>());
+			// Viraj's code end
 		}
 
 		if (this._isPlainObject(value)) {
@@ -1673,9 +1826,7 @@ export class AgentSession {
 		if (isLocalStateExpression) {
 			try {
 				const value = this._resolveLocally(trimmedText);
-				await this._emitLocalEvalEntries(this._handleAgentEvent, [
-					{ query: trimmedText, result: this._formatResult(value) },
-				]);
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [this._createLocalEvalEntry(trimmedText, value)]);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				await this._emitLocalEvalEntries(this._handleAgentEvent, [
@@ -1686,6 +1837,29 @@ export class AgentSession {
 			return;
 		}
 		//Viraj's Code End
+		// Viraj's code start
+		if (trimmedText === "/zoutput") {
+			await emitIntercept(
+				`Z3EVAL output mode: ${this._localEvalRenderMode}\nUse /zoutput tables or /zoutput references.\n`,
+			);
+			options?.preflightResult?.(true);
+			return;
+		}
+		const zoutputMatch = trimmedText.match(/^\/zoutput\s+(\S+)\s*$/i);
+		if (zoutputMatch) {
+			const requestedMode = zoutputMatch[1].toLowerCase();
+			if (requestedMode === "tables" || requestedMode === "references") {
+				this._localEvalRenderMode = requestedMode;
+				await emitIntercept(`Z3EVAL output mode: ${this._localEvalRenderMode}\n`);
+			} else {
+				await emitIntercept(
+					`Unknown Z3EVAL output mode: ${zoutputMatch[1]}\nUse /zoutput tables or /zoutput references.\n`,
+				);
+			}
+			options?.preflightResult?.(true);
+			return;
+		}
+		// Viraj's code end
 		// /z-mode slash commands
 		if (trimmedText === "/z-mode=on") {
 			this._z3evalMode = true;
@@ -1732,9 +1906,7 @@ export class AgentSession {
 			try {
 				const value = this._resolveLocally(expression);
 				//Viraj's code start
-				await this._emitLocalEvalEntries(this._handleAgentEvent, [
-					{ query: expression, result: this._formatResult(value) },
-				]);
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [this._createLocalEvalEntry(expression, value)]);
 				//Viraj's code end
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1808,9 +1980,7 @@ export class AgentSession {
 			try {
 				const value = this._resolveLocally(text);
 				//Viraj's code start
-				await this._emitLocalEvalEntries(this._handleAgentEvent, [
-					{ query: trimmedText, result: this._formatResult(value) },
-				]);
+				await this._emitLocalEvalEntries(this._handleAgentEvent, [this._createLocalEvalEntry(trimmedText, value)]);
 				//Viraj's code end
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);

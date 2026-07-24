@@ -36,6 +36,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: "Manually compact the session context" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+	// Viraj's code start
+	{ name: "zoutput", description: "View or change Z3EVAL output format" },
+	// Viraj's code end
 	//Viraj's Code Start
 	{ name: "persist", description: "Persist variables, or save them with /persist session [name]" },
 	{ name: "unpersist", description: "Stop persisting selected local variables" },

@@ -2,11 +2,12 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../../test/suite/harness.ts";
-import type { PersistedLocalState } from "../local-state.ts";
-import { NamedLocalStateStore, validateNamedLocalStateSnapshotName } from "../named-local-state-store.ts";
-import { type LocalStateEntry, SessionManager } from "../session-manager.ts";
+import { formatCheckpointTimestamp, validateNamedLocalStateSnapshotName } from "../named-local-state-store.ts";
+import { SessionManager } from "../session-manager.ts";
+import { SQLiteLocalStateStore } from "../sqlite-local-state-store.ts";
 
 function getLastMessageText(harness: Harness): string {
 	return getMessageText(harness.session.messages[harness.session.messages.length - 1]);
@@ -20,7 +21,7 @@ function getLastLocalResult(harness: Harness): string | undefined {
 }
 
 function getGeneratedName(message: string): string {
-	const match = message.match(/- (local-state-[A-Za-z0-9-]+)/);
+	const match = message.match(/- (\d{14}(?:-\d{2,})?)/);
 	if (!match) {
 		throw new Error(`Generated snapshot name was not found in: ${message}`);
 	}
@@ -32,6 +33,7 @@ describe("named local-state sessions", () => {
 	const directories: string[] = [];
 
 	afterEach(() => {
+		vi.useRealTimers();
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
@@ -87,7 +89,16 @@ describe("named local-state sessions", () => {
 		expect(getLastLocalResult(resumed)).toBe("10");
 	});
 
-	it("generates distinct stable names that list and restore", async () => {
+	it("formats checkpoint timestamps from UTC components", () => {
+		expect(formatCheckpointTimestamp(new Date("2026-01-02T00:04:05.999Z"))).toBe("20260102000405");
+		expect(formatCheckpointTimestamp(new Date("2026-12-09T23:08:07.000Z"))).toBe("20261209230807");
+		expect(formatCheckpointTimestamp(new Date("2026-12-31T23:59:59.999Z"))).toBe("20261231235959");
+		expect(formatCheckpointTimestamp(new Date("2027-01-01T00:00:00.000Z"))).toBe("20270101000000");
+	});
+
+	it("generates collision-safe names that list, restore, and delete", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-07-22T17:05:30.999Z"));
 		const directory = createStorageDirectory();
 		const first = await createStoredHarness(directory);
 		await first.session.prompt("x = 7");
@@ -96,17 +107,44 @@ describe("named local-state sessions", () => {
 		const firstName = getGeneratedName(getLastMessageText(first));
 		await first.session.prompt("/persist session");
 		const secondName = getGeneratedName(getLastMessageText(first));
-		expect(firstName).not.toBe(secondName);
+		await first.session.prompt("/persist session");
+		const thirdName = getGeneratedName(getLastMessageText(first));
+		expect(firstName).toBe("20260722170530");
+		expect(secondName).toBe("20260722170530-01");
+		expect(thirdName).toBe("20260722170530-02");
 
 		await first.session.prompt("/restoresession list");
 		const listing = getLastMessageText(first);
 		expect(listing).toContain(`- ${firstName} (1 variable`);
 		expect(listing).toContain(`- ${secondName} (1 variable`);
+		expect(listing).toContain(`- ${thirdName} (1 variable`);
 
 		const second = await createStoredHarness(directory);
 		await second.session.prompt(`/restoresession ${firstName}`);
 		await second.session.prompt("= x");
 		expect(getLastLocalResult(second)).toBe("7");
+		await second.session.prompt(`/deletesession ${firstName}`);
+		expect(getLastMessageText(second)).toContain(`Deleted saved local-state session:\n- ${firstName}`);
+		await second.session.prompt("/restoresession list");
+		expect(getLastMessageText(second)).not.toContain(`- ${firstName} (`);
+	});
+
+	it("does not overwrite an explicit timestamp name during automatic generation", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-07-22T17:05:30.000Z"));
+		const directory = createStorageDirectory();
+		const harness = await createStoredHarness(directory);
+		await harness.session.prompt("x = 7");
+		await harness.session.prompt("/persist x");
+		await harness.session.prompt("/persist session 20260722170530");
+		await harness.session.prompt("x = 8");
+		await harness.session.prompt("/persist session");
+		expect(getGeneratedName(getLastMessageText(harness))).toBe("20260722170530-01");
+
+		const restored = await createStoredHarness(directory);
+		await restored.session.prompt("/restoresession 20260722170530");
+		await restored.session.prompt("= x");
+		expect(getLastLocalResult(restored)).toBe("7");
 	});
 
 	it("updates snapshots explicitly but does not auto-update them", async () => {
@@ -180,23 +218,19 @@ describe("named local-state sessions", () => {
 		const harness = await createStoredHarness(directory);
 		await harness.session.prompt("x = 2");
 		await harness.session.prompt("/persist x");
-		const before = [...harness.sessionManager.getEntries()]
-			.reverse()
-			.find((entry): entry is LocalStateEntry<PersistedLocalState> => entry.type === "local_state")?.state;
+		await harness.session.prompt("/persist session broken");
+		const sessionId = harness.sessionManager.getSessionId();
+		const before = new SQLiteLocalStateStore(directory).loadSessionState(sessionId);
 
-		const snapshotDirectory = join(directory, "named-local-state");
-		new NamedLocalStateStore(snapshotDirectory).save("broken", before!, harness.sessionManager.getSessionId());
-		writeFileSync(
-			join(snapshotDirectory, "registry.json"),
-			JSON.stringify({ version: 1, snapshots: [{ version: 99, name: "broken" }] }),
-		);
+		const db = new DatabaseSync(join(directory, "agentz-local-state.sqlite"));
+		db.prepare("UPDATE named_checkpoints SET version = 99 WHERE name = ?").run("broken");
+		db.close();
+
 		await harness.session.prompt("/restoresession broken");
 		expect(getLastMessageText(harness)).toContain("Unsupported saved local-state snapshot version: 99.");
 		await harness.session.prompt("= x");
 		expect(getLastLocalResult(harness)).toBe("2");
-		const after = [...harness.sessionManager.getEntries()]
-			.reverse()
-			.find((entry): entry is LocalStateEntry<PersistedLocalState> => entry.type === "local_state")?.state;
+		const after = new SQLiteLocalStateStore(directory).loadSessionState(sessionId);
 		expect(after).toEqual(before);
 	});
 

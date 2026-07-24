@@ -14,6 +14,18 @@ const REGISTRY_VERSION = 1;
 const SNAPSHOT_VERSION = 1;
 const MAX_SNAPSHOT_NAME_LENGTH = 64;
 
+export function formatCheckpointTimestamp(date: Date): string {
+	const pad = (value: number, length = 2): string => String(value).padStart(length, "0");
+	return [
+		pad(date.getUTCFullYear(), 4),
+		pad(date.getUTCMonth() + 1),
+		pad(date.getUTCDate()),
+		pad(date.getUTCHours()),
+		pad(date.getUTCMinutes()),
+		pad(date.getUTCSeconds()),
+	].join("");
+}
+
 export interface NamedLocalStateSnapshot {
 	version: 1;
 	id: string;
@@ -196,18 +208,13 @@ export class NamedLocalStateStore {
 	}
 
 	private generateName(registry: NamedLocalStateRegistry): string {
-		const timestamp = new Date()
-			.toISOString()
-			.replace(/[-:]/g, "")
-			.replace(/\.\d{3}Z$/, "")
-			.replace("T", "-");
-		for (let attempt = 0; attempt < 100; attempt++) {
-			const candidate = `local-state-${timestamp}-${randomUUID().slice(0, 8)}`;
+		const timestamp = formatCheckpointTimestamp(new Date());
+		for (let attempt = 0; ; attempt++) {
+			const candidate = attempt === 0 ? timestamp : `${timestamp}-${String(attempt).padStart(2, "0")}`;
 			if (!registry.snapshots.some((snapshot) => snapshot.name === candidate)) {
 				return candidate;
 			}
 		}
-		throw new Error("Unable to generate a unique saved local-state session name.");
 	}
 
 	private readRegistry(): NamedLocalStateRegistry {

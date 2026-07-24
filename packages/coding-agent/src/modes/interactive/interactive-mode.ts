@@ -508,6 +508,19 @@ export class InteractiveMode {
 		}
 		// Viraj's Code end
 
+		// Viraj's code start
+		const zoutputCommand = slashCommands.find((command) => command.name === "zoutput");
+		if (zoutputCommand) {
+			zoutputCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const modes = ["tables", "references"];
+				const filtered = modes.filter((mode) => mode.startsWith(prefix.toLowerCase()));
+				return filtered.length > 0
+					? filtered.map((mode) => ({ value: mode, label: mode, description: `Use ${mode} output format` }))
+					: null;
+			};
+		}
+		// Viraj's code end
+
 		const modelCommand = slashCommands.find((command) => command.name === "model");
 		if (modelCommand) {
 			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {

@@ -150,8 +150,10 @@ describe("z3eval file mode", () => {
 
 		await expect(main(["--no-session", "--offline", testFilePath])).rejects.toThrow("process.exit called with 0");
 
-		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("1..5 = | Index | Value |"));
-		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("| 4 | 5 |"));
+		// Viraj's code start
+		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("1..5 = - 1\n- 2\n- 3\n- 4\n- 5"));
+		expect(logMock).not.toHaveBeenCalledWith(expect.stringContaining("Index"));
+		// Viraj's code end
 		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("Processed 1 expressions from test-file.z3."));
 	});
 
@@ -168,9 +170,10 @@ describe("z3eval file mode", () => {
 		await expect(main(["--no-session", "--offline", jsFilePath])).rejects.toThrow("process.exit called with 0");
 
 		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("[1, 2, 3].map(value => value * value) = "));
-		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("| 0 | 1 |"));
-		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("| 1 | 4 |"));
-		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("| 2 | 9 |"));
+		// Viraj's code start
+		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("- 1\n- 4\n- 9"));
+		expect(logMock).not.toHaveBeenCalledWith(expect.stringContaining("Index"));
+		// Viraj's code end
 		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("Processed 1 expressions from test-file.js."));
 
 		if (fs.existsSync(jsFilePath)) fs.unlinkSync(jsFilePath);
@@ -255,7 +258,9 @@ prompt = {
 
 		expect(logMock).toHaveBeenNthCalledWith(1, "10 + 20 = 30");
 		expect(logMock).toHaveBeenNthCalledWith(2, "40 + 50 = 90");
-		expect(logMock).toHaveBeenNthCalledWith(3, expect.stringContaining("[1, 2, 3] = | Index | Value |"));
+		// Viraj's code start
+		expect(logMock).toHaveBeenNthCalledWith(3, expect.stringContaining("[1, 2, 3] = - 1\n- 2\n- 3"));
+		// Viraj's code end
 		expect(logMock).toHaveBeenCalledWith(expect.stringContaining("Processed 3 expressions from test-file.js."));
 
 		if (fs.existsSync(jsFilePath)) fs.unlinkSync(jsFilePath);
